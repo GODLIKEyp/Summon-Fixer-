@@ -1,0 +1,35 @@
+{
+  "name": "@summon-fixer/vite-plugin",
+  "version": "0.1.0",
+  "description": "Vite dev server plugin and browser bridge for Summon Fixer",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@summon-fixer/contracts": "^0.1.0",
+    "@summon-fixer/overlay": "^0.1.0",
+    "magic-string": "^0.30.17",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.0",
+    "typescript": "^5.8.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
+  }
+}
