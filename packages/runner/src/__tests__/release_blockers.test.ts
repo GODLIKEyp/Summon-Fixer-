@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, readdirSync, renameSync, symlinkSync, existsSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, readdirSync, renameSync, symlinkSync, existsSync, chmodSync, linkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from 'node:http';
@@ -34,6 +34,46 @@ async function fixture(edits = output.edits, mode: 'manual' | 'plan' = 'manual',
 }
 
 describe('Fail-closed application boundary', () => {
+  it('cancels a rejected proposal without entering the writer', async () => {
+    const spy = vi.spyOn(writer, 'replaceFileSafely');
+    const { executor, task, path } = await fixture();
+    await executor.applyApproval(task.taskId, { ...approval(task), decision: 'rejected' });
+    expect(task.status).toBe('cancelled');
+    expect(task.application).toEqual({ status: 'not_applied', appliedEditsCount: 0 });
+    expect(spy).not.toHaveBeenCalled();
+    expect(readFileSync(path, 'utf8')).toBe('const value = 1;\n');
+    expect(readdirSync(join(root, 'src'))).toEqual(['a.ts']);
+  });
+
+  it.each(['version', 'digest'])('rejects a stale approval %s before entering the writer', async (field) => {
+    const spy = vi.spyOn(writer, 'replaceFileSafely');
+    const { executor, task, path } = await fixture();
+    const stale = approval(task);
+    if (field === 'version') stale.taskVersion += 1;
+    else stale.proposalDigest = '0'.repeat(64);
+    await expect(executor.applyApproval(task.taskId, stale)).rejects.toMatchObject({ statusCode: 409 });
+    expect(task.status).toBe('awaiting_approval');
+    expect(spy).not.toHaveBeenCalled();
+    expect(readFileSync(path, 'utf8')).toBe('const value = 1;\n');
+    expect(readdirSync(join(root, 'src'))).toEqual(['a.ts']);
+  });
+
+  it('does not modify an outside hard-link alias of an approved target', async () => {
+    const { executor, task, path } = await fixture();
+    const outside = mkdtempSync(join(tmpdir(), 'summon-hardlink-'));
+    outsideRoots.push(outside);
+    const alias = join(outside, 'alias.ts');
+    linkSync(path, alias);
+    const before = statSync(alias);
+    await expect(executor.applyApproval(task.taskId, approval(task))).rejects.toMatchObject({ code: 'SAFE_WRITE_UNAVAILABLE' });
+    expect(readFileSync(alias, 'utf8')).toBe('const value = 1;\n');
+    expect(statSync(alias).ino).toBe(before.ino);
+    expect(statSync(alias).mode).toBe(before.mode);
+    expect(readdirSync(join(root, 'src'))).toEqual(['a.ts']);
+    expect(readdirSync(outside)).toEqual(['alias.ts']);
+    expect(task.application).toEqual({ status: 'not_applied', appliedEditsCount: 0 });
+  });
+
   it.each([0o600, 0o755])('refuses application without altering content, mode %i, inode or staging entries', async (mode) => {
     const { executor, task, path } = await fixture();
     chmodSync(path, mode);

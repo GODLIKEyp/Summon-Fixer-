@@ -7,6 +7,8 @@
  * directory identity confinement AND exclusive/transactional content ownership.
  * Until then, fail before opening any target or staging file for writing. This
  * also preserves modes and leaves no staging artifacts to clean up.
+ * See ../SAFE_WRITE_ASSESSMENT.md for the trusted-local threat model and
+ * macOS primitive assessment. Approval alone does not establish exclusivity.
  */
 export class SafeWriteUnavailableError extends Error {
   readonly code = 'SAFE_WRITE_UNAVAILABLE';
