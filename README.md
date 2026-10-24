@@ -1,184 +1,138 @@
-[README_Summon_Fixer_Final.md](https://github.com/user-attachments/files/33903935/README_Summon_Fixer_Final.md)
 <div align="center">
 
 # ⚡ Summon Fixer
 
-### **Stop hunting for code. Start pointing at what you want to change.**
+### Point at the problem. Describe the change. Review the code.
 
-**A visual, source-aware AI companion for web developers and creators.**
+**A visual, source-aware AI companion that brings Codex into your running website.**
 
-[**The Problem**](#the-problem) · [**Live MVP**](#what-weve-built) · [**How It Works**](#from-a-click-to-a-code-proposal) · [**Future Vision**](#the-vision-beyond-the-mvp) · [**Run Locally**](#run-the-project)
+[See the experience](#the-experience) · [How it works](#how-it-works) · [Run locally](#run-locally) · [Roadmap](#where-were-going)
+
+**React + Vite · TypeScript · OpenAI Codex CLI · Local development**
 
 </div>
 
-> **Hackathon category:** Everyday Productivity / Developer Tools — also relevant to Local Business & Creator Tools.
+![Aura Studio storefront with the Summon Fixer launcher in the bottom-right corner](docs/images/aura-studio-live.png)
+
+<p align="center"><sub>Actual application screenshot: Aura Studio is our demo storefront; Summon Fixer is the development companion attached to it.</sub></p>
+
+> **Hackathon MVP:** Select a live UI element, resolve its source, request a Codex proposal, and review the original and replacement code. Automatic file application is not enabled yet.
 >
-> **What is genuinely working:** Select a website element → resolve its source → ask real Codex for a source edit → inspect the old/new code → reject or review the proposal.
->
-> **Current boundary:** The production runner deliberately refuses approved file writes (`SAFE_WRITE_UNAVAILABLE`); auto-apply and resulting hot reload are **future capabilities, not shipped functionality**.
+> **Looking for the runnable project?** Use **[integration/vertical-slice](https://github.com/GODLIKEyp/Summon-Fixer-/tree/integration/vertical-slice)**. The default `main` branch contains the earlier foundation and this project showcase.
 
----
+## The idea
 
-## Imagine this
+You can see the problem. Finding the code behind it is the slow part.
 
-You're building a site. A checkout button looks wrong. The cart total doesn't update. A form accepts an invalid email.
+A checkout button needs a new design. A cart control does nothing. A form accepts an invalid email. Each task starts in the browser, then sends you through components, styles, event handlers, and AI chat before you can even explain what needs to change.
 
-The problem is *right in front of you* — yet fixing it sends you on a scavenger hunt through components, styles, event handlers and files.
+**What if the website itself was your starting point for working on its code?**
 
-**What if your website was the interface to your codebase?**
+Summon Fixer connects a visible element to its source and carries that context into a Codex request. You describe the outcome in plain English and inspect a concrete source proposal from the same development surface.
 
-Click the broken element, describe what should happen, and review an AI-generated source change **in context**. That is the experience we're building with Summon Fixer.
+### Who it is for
 
-### ⚡ The experience we're building — in four frames
+| Audience | Everyday friction | What Summon Fixer explores |
+|:--|:--|:--|
+| Developers | Switching between browser, editor, and AI chat | Starting a source-aware request from the actual UI |
+| Creators | Explaining exactly which part of a page needs attention | Pointing at an element and describing the intended change |
+| Local-business teams and their developers | Turning storefront feedback into implementation tasks | A shared visual reference and an inspectable code proposal |
 
-![Four-part concept storyboard showing visual element selection, a plain-English instruction, a Codex source-code proposal, and the intended post-approval browser update](docs/images/vision-storyboard.png)
+The current prototype targets **local React/Vite development**. Broader creator and business workflows are the product direction.
 
-> **PRODUCT VISION / CONCEPT ART — NOT A LIVE DEMO SCREENSHOT.** This four-panel illustration shows the complete experience we are building: **select → describe → review → see the change**. In today's verified MVP, the first three stages work as a proposal-and-review flow. The fourth stage—actually applying an approved change and seeing it hot-reload—is **not yet implemented**; the writer deliberately returns `SAFE_WRITE_UNAVAILABLE`.
+## The experience
 
+### 1. Point at what needs to change
 
-## The problem
+Open the floating launcher or press **⌘⇧S** on macOS. Hover over an element and select it. Development-time instrumentation resolves the selection to its source location.
 
-For independent developers, creators and small-business teams, even small website edits create friction:
+<p align="center">
+  <img src="docs/images/element-source-mapping.png" width="656" alt="Checkout Now button highlighted with its App.tsx source file, line, and column" />
+</p>
 
-- **The visual-to-code gap:** The element is easy to find on screen, but its owning component is not.
-- **Context switching:** Browser → editor → file search → AI chat → back to browser.
-- **Generic AI suggestions:** A snippet can be plausible without matching the selected element or the actual project.
-- **Unclear control:** Accepting an AI edit should mean approving a specific, inspectable change — not granting unlimited write access.
+<p align="center"><sub>Actual screenshot: the selected button maps to <code>App.tsx</code>. Line numbers vary by revision.</sub></p>
 
-## What we've built
+### 2. Say what you want
 
-### A real React/Vite website with a local visual AI overlay
+The overlay keeps the selected target and source badge beside your instruction. Choose **Manual Approval** for a reviewable proposal or **Plan Only** for a read-only task.
 
-The working demo is an **Aura Studio** e-commerce-style storefront. It gives Summon a realistic UI with buttons, cart controls and checkout interactions. Payment is simulated; there is no real payment processor.
+<p align="center">
+  <img src="docs/images/visual-edit-prompt.png" width="600" alt="Summon Fixer prompt panel with selected checkout button, source badge, instruction field, Manual Approval and Plan Only controls" />
+</p>
 
-![Actual Aura Studio development storefront showing the Summon Fixer launcher](docs/images/aura-studio-live.png)
+<p align="center"><sub>Actual screenshot: the instruction panel. Auto Apply is disabled.</sub></p>
 
-<sub>**Actual application screenshot.** Aura Studio is the demonstration host, not a conceptual UI render.</sub>
+For example:
 
-### 01 / Point at the element
+> Change this Checkout Now button to “Buy Now”, keeping the calculated price. Make it purple with white text and rounded corners. Preserve its checkout behavior.
 
-Activate Summon from its floating launcher or press **⌘⇧S** on macOS. Hover over and select a visible UI element; the dev-time instrumentation links it to a file and location.
+### 3. Review a source-level proposal
 
-![Actual selected button with source-location highlight](docs/images/element-source-mapping.png)
+The local runner invokes **OpenAI Codex CLI** in read-only mode and requests structured source changes. It validates the response against the proposal schema, allowed target, and existing source snippets before presenting the original and replacement code.
 
-<sub>**Actual screenshot:** a rendered checkout button selected with its `App.tsx` source position.</sub>
+Review the proposal, reject it, or use the read-only result to guide your own edit. The team's earlier local browser verification reported a real Codex proposal and successful rejection; deterministic `--fake` output is a separate testing mode.
 
-### 02 / Describe the change in plain English
+**Current application boundary:** approving a proposal does not modify files. The writer returns `SAFE_WRITE_UNAVAILABLE`. Applied changes and automatic hot reload remain future work.
 
-A lightweight overlay shows the selected element, its verified source badge, and the instruction field. Choose **Manual Approval** or **Plan Only**.
+## Three tasks to try
 
-![Actual Summon Fixer overlay showing source badge and instruction panel](docs/images/visual-edit-prompt.png)
+Our Aura Studio storefront provides realistic scenarios across styling, behavior, and validation. Checkout is simulated; no payment is processed.
 
-<sub>**Actual screenshot:** the development overlay; this image does not claim a successful AI write.</sub>
+| Scenario | Example request | What to inspect in the proposal |
+|:--|:--|:--|
+| **Visual design** | “Rename Checkout Now to Buy Now and make it purple.” | Label, styling, and preserved click behavior |
+| **Cart behavior** | “Make the cart + and − buttons update quantity, totals, and tax.” | State updates, minimum quantity, and independent cart items |
+| **Form validation** | “Block invalid checkout email and show an accessible error.” | Validation before processing, feedback, and preserved cart state |
 
-### 03 / Get a source-level Codex proposal
+The cart and validation defects are intentional demo fixtures. These scenarios demonstrate requests and proposal review; they are not claims of automatically applied fixes.
 
-Instead of guessing from pixels, Summon sends a scoped task to a local **OpenAI Codex CLI** process. The runner asks for structured old/new source content. The proposal is checked against a schema, existing-file scope, and exact source snippets.
+See the [scenario prompts and intended acceptance criteria](https://github.com/GODLIKEyp/Summon-Fixer-/blob/integration/vertical-slice/apps/demo/DEMO_SCENARIOS.md). Its apply/HMR steps describe the intended end-to-end target; the current writer still blocks application.
 
-In our local browser test, **real Codex generated a code proposal and the reviewer rejected it successfully**. This is distinct from the repository's deterministic `--fake` test runner. We do not present fake-runner captures as evidence of real AI generation.
-
-### 04 / Review before acting
-
-The developer can inspect the proposed changes, read the source-level before/after content, and reject them. The implementation also binds approvals to a version and proposal digest. The user remains in charge of what was *proposed*.
-
-**Important:** The current approval endpoint **does not write to disk**, even if a user chooses Approve. It fails closed rather than claiming an unverified safe replacement. A secure, verified writer is on the roadmap.
-
----
-
-## From a click to a code proposal
+## How it works
 
 ```mermaid
 flowchart TD
-    A[React + Vite development website] --> B[Select DOM element with Summon overlay]
-    B --> C[JSX instrumentation maps source ID and revision]
-    C --> D[Authenticated same-origin Vite bridge]
-    D --> E[Loopback-only local task engine]
-    E --> F[Codex CLI creates read-only structured proposal]
-    F --> G[Validate schema, target scope and source snippet]
-    G --> H{Human review}
-    H -->|Reject| I[Cancel with no file write]
-    H -->|Plan Only| J[Read-only result]
-    H -->|Approve| K[Safe-write gate: unavailable in current MVP]
+    A["Select an element in the overlay"] --> B["Vite registry resolves source and revision"]
+    B --> C["Authenticated bridge to the local engine"]
+    C --> D["Codex produces a read-only proposal"]
+    D --> E["Validate scope and source content"]
+    E --> F{"Developer review"}
+    F -->|Reject| G["Cancel without a file write"]
+    F -->|Inspect| H["Review original and replacement code"]
+    F -->|Approve| I["Application blocked in current MVP"]
 ```
 
-**Why this architecture matters:** Browser selections are untrusted. The server resolves source identities and retains authority over workspace scope, while the model proposes rather than edits files directly.
+The browser supplies a selection and request; the engine owns workspace and policy decisions. The model proposes changes rather than directly editing the project.
 
-### Built with
+### Engineering choices
 
-| Layer | Technology | What it does |
-|:--|:--|:--|
-| Frontend | **React 19, TypeScript, Vite 8** | Running storefront and development surface |
-| Visual companion | **Shadow DOM-based overlay** | Selection, inline task prompts and review UI |
-| Source intelligence | **JSX/TSX instrumentation + Vite registry** | Maps DOM elements to verified source IDs and revisions |
-| Local bridge | **Vite middleware** | Session-aware, same-origin requests to the engine |
-| Task engine | **Node.js, TypeScript, Zod** | Enforces proposal, path and approval boundaries |
-| AI generation | **OpenAI Codex CLI** | Produces structured source-edit proposals |
-| Reliability | **Vitest, TypeScript checks** | Unit and integration regressions |
+| Choice | Why it matters |
+|:--|:--|
+| **Source mapping through JSX/TSX instrumentation** | Connects a rendered element to registered source context |
+| **Shadow DOM overlay** | Isolates the companion's interface from host-page styling |
+| **Same-origin bridge and loopback engine** | Keeps the development connection local and authenticated |
+| **Structured proposals and exact snippet checks** | Makes suggested changes inspectable and rejects malformed proposals |
+| **Version- and digest-bound approvals** | Binds review decisions to a specific proposal |
+| **Fail-closed writer** | Refuses file replacement while its concurrency guarantees are unresolved |
 
-### Repository layout
+Read the [safe-write assessment](https://github.com/GODLIKEyp/Summon-Fixer-/blob/integration/vertical-slice/packages/runner/SAFE_WRITE_ASSESSMENT.md) for the current implementation boundary.
 
-```text
-apps/demo/             Aura Studio storefront and scenario fixtures
-packages/overlay/      Floating UI, point mode and review panel
-packages/vite-plugin/  Dev-only injection, source mapping and secure bridge
-packages/runner/       Codex proposal runner and task lifecycle
-packages/contracts/    Shared types, Zod schemas and approval digests
-packages/cli/          Local engine + Vite process launcher
-```
+### Stack and repository map
 
-## Three demo stories, one product
+| Location on the integration branch | Technology and responsibility |
+|:--|:--|
+| `apps/demo/` | React, TypeScript, Vite — Aura Studio and demo scenarios |
+| `packages/overlay/` | Browser UI, element selection, prompts, and proposal review |
+| `packages/vite-plugin/` | Dev-only injection, JSX transformation, source registry, and bridge |
+| `packages/runner/` | Node.js and Codex CLI — proposal generation and task lifecycle |
+| `packages/contracts/` | TypeScript and Zod — shared schemas, validation, and approval digests |
+| `packages/cli/` | Local engine and development-server launcher |
 
-We prepared three realistic tasks on the demo storefront. The UI defects are deliberately present so they can be used to evaluate AI **proposals**; the requested fixes are not pre-implemented.
+## Run locally
 
-| Scenario | User's request | What it demonstrates |
-|:--|:--|:--|
-| **Visual design** | *“Turn Checkout Now into Buy Now and make it purple.”* | Selection-to-source + scoped UI-edit proposal |
-| **Functional logic** | *“Make the cart + and − buttons update quantities, totals and tax.”* | A request for a behavioral React fix, not only styling |
-| **Validation** | *“Reject invalid checkout email and show an accessible error.”* | A request involving form behavior and user feedback |
+**Requirements:** Node.js **24+**, npm **10+**, and two available local ports. Real AI generation also requires an installed, authenticated Codex CLI with available usage.
 
-See [demo scenarios, prompts and acceptance criteria](apps/demo/DEMO_SCENARIOS.md).
-
----
-
-## The vision: beyond the MVP
-
-**The endgame is not another chat box in the developer workflow. It's a new way to interact with software.**
-
-Our vision is a context-aware visual companion that understands *which* element you mean, traces *why* it behaves that way, proposes changes across relevant code, lets you choose the level of control, verifies the result, and gives you a working application back.
-
-### The four-frame vision
-
-The concept storyboard near the top of this README visualizes our north-star journey, **from selecting a live UI element to a verified, applied change**. It is intentionally labeled as **future-facing concept art** because automatic application and hot reload are still on the roadmap. The accurate implementation status appears [below](#transparent-feature-status).
-
-### Our north-star experience
-
-1. **Point** — select anything in a running interface, not only a component name.
-2. **Understand** — find the component, state and relevant behavior behind that selection.
-3. **Ask** — describe the goal naturally, without opening a maze of files.
-4. **Plan** — understand the impact and see exactly what would change.
-5. **Approve** — choose manual approval, read-only planning, or eventually narrowly scoped automatic execution.
-6. **Verify** — run checks, confirm the behavior and see the improvement in the actual app.
-
-### The future we want to unlock
-
-- **For creators:** adjust a landing page, fix a signup form, or update a portfolio without digging through frontend files.
-- **For small businesses:** maintain storefronts and booking flows with clearer visibility into proposed changes.
-- **For developers:** reduce context switching while retaining test, security and Git review boundaries.
-- **For teams:** bring a source-aware assistant into additional frameworks, full-stack services and eventually supported desktop interfaces.
-
-These are **product directions**, not claims that the current MVP already supports non-Vite apps, backend editing or autonomous desktop control.
-
----
-
-## Run the project
-
-The tested integration is on **[`integration/vertical-slice`](https://github.com/GODLIKEyp/Summon-Fixer-/tree/integration/vertical-slice)**. The default `main` branch is an earlier foundation and should not be used as the finished hackathon reference.
-
-### Prerequisites
-
-- Node.js **24+**, npm **10+**
-- For real AI: installed Codex CLI, signed-in account and available Codex usage
-- Two available loopback ports (examples below: 7890 and 5185)
+Clone the **integration branch**, which contains the complete runnable prototype:
 
 ```bash
 git clone --single-branch --branch integration/vertical-slice https://github.com/GODLIKEyp/Summon-Fixer-.git
@@ -187,16 +141,7 @@ npm ci
 npm run build
 ```
 
-### Option A — Local deterministic demo (no model calls)
-
-```bash
-npm run summon -- dev --fake --port 7890 \
-  --command "npm run --workspace demo dev -- --host 127.0.0.1 --port 5185 --strictPort"
-```
-
-The `--fake` mode is for testing the browser pipeline. Its outputs are **not Codex-generated proposals**.
-
-### Option B — Real Codex proposal generation
+### With real Codex
 
 ```bash
 codex --version
@@ -208,62 +153,60 @@ CODEX_BIN_PATH="$(command -v codex)" npm run summon -- dev \
   --command "npm run --workspace demo dev -- --host 127.0.0.1 --port 5185 --strictPort"
 ```
 
-Open **http://127.0.0.1:5185**. Activate Summon, select a page element, submit a prompt, and inspect its source proposal. **Do not include `--fake` for real model use.** The selected Codex model comes from the developer's local CLI configuration, not a guarantee about account entitlements. Authorized project context may be sent to the configured model provider and consume usage.
+Open **[127.0.0.1:5185](http://127.0.0.1:5185)**, activate Summon Fixer, select an element, and submit a request. Review the returned source proposal. The model follows your local Codex configuration; authorized project context may be sent to its configured provider and consume usage.
 
-> If ports are already occupied, choose unused ports instead of stopping other work. The app and engine should remain loopback-only. Stop the demo with **Ctrl+C**.
+### Without model calls
 
-### Verify
+```bash
+npm run summon -- dev --fake --port 7890 \
+  --command "npm run --workspace demo dev -- --host 127.0.0.1 --port 5185 --strictPort"
+```
+
+`--fake` uses a deterministic test runner to exercise the interface and request pipeline. Its proposals are **not generated by Codex**. Omit this flag for real AI generation.
+
+If either port is occupied, use an available port. Keep the app and engine on loopback. Stop with **Ctrl+C**.
+
+### Development checks
 
 ```bash
 npm run build
 npm run typecheck
 SUMMON_RUN_REAL_CODEX_TESTS=0 npm test
 npm audit
+git diff --check
 ```
 
-**Reported local verification (24 October 2026):** 223 model-free tests passed, two real-Codex tests skipped, build/typecheck passed and npm audit reported zero vulnerabilities. These are developer-run results, not a claim of a passing remote CI badge. Real Codex proposal review and rejection were also observed in a browser session.
+The test command above excludes real-Codex integration tests. Build and unit-test success alone do not establish real-model or browser acceptance.
 
-## Transparent feature status
+## Where we're going
 
-| Functionality | Current state |
+**Our vision: use the running interface to request, review, and verify changes to the software behind it.**
+
+The storyboard below illustrates that complete journey. It is **generated concept artwork**, not a live demo capture. Its final applied-change frame shows a future capability.
+
+![Concept storyboard showing element selection, a natural-language request, a code proposal, and a future approved live update](docs/images/vision-storyboard.png)
+
+<p align="center"><sub>Product vision: select → describe → review → apply and verify. Automatic application and the final live update are not implemented in the current MVP.</sub></p>
+
+| Available in the prototype | Next milestones |
 |:--|:--|
-| Floating overlay in a running React/Vite dev page | ✅ Implemented / browser-tested |
-| Select a DOM element and resolve its source file | ✅ Implemented / browser-tested |
-| Generate an edit proposal through real Codex CLI | ✅ Observed in a local browser run |
-| Inspect original/replacement code | ✅ Observed in a local browser run |
-| Read-only Plan Only and Reject | ✅ Implemented / tested |
-| Explicit approval and proposal digest validation | ✅ Implemented, **but cannot write** |
-| Save approved change to disk | ⛔ Intentionally blocked (`SAFE_WRITE_UNAVAILABLE`) |
-| Apply → Vite HMR → verified website change | 🧭 Vision / not yet demonstrated |
-| Automatic approval, multi-file edits, backend or desktop editing | 🧭 Beyond current MVP |
+| Visual element selection and source resolution | Restricted file application with documented concurrency guarantees |
+| Codex-powered source proposals | Verified changes and hot-reload acceptance in an isolated checkout |
+| Original/replacement review and rejection | Test-aware proposals and richer review history |
+| Read-only planning and approval validation | Broader framework support and controlled multi-file workflows |
 
-### Why does the writer fail closed?
+Backend editing, desktop control, and autonomous execution are longer-term directions beyond this React/Vite prototype.
 
-The existing approval pipeline checks target path containment, source snippets, content preconditions, and digests. But ordinary macOS/Node filesystem operations do not guarantee a content-conditional replacement against independent writers and parent-directory swaps. Rather than silently risking overwritten or redirected source, the current runtime refuses the operation. Read the documented [safe-write assessment](packages/runner/SAFE_WRITE_ASSESSMENT.md) for details.
+## The team
 
-**This is a proposal-and-review MVP, not an autonomous code editor.** A future write mode must adopt a carefully documented safety and concurrency model, ideally demonstrated in a disposable checkout before being offered in ordinary projects.
+Built by **[Priyanshu](https://github.com/GODLIKEyp)** and **[Suhani](https://github.com/suhanii-1910)** for the **DevDay Exchange Community Metro Hackathon, Pune — 24 October 2026**.
 
-## Why this matters
-
-**Our insight:** the hard part is often not generating code. It is connecting what a user sees to the exact code they intend to change, keeping the request scoped, and making the result understandable enough to trust.
-
-Summon Fixer explores that middle layer: **visual intent → verified source context → AI proposal → human decision**.
-
-### Next milestones
-
-- A restricted, reviewed application mechanism with honest concurrency guarantees
-- Verified file changes and Vite hot-reload acceptance in an isolated checkout
-- Broader framework and project onboarding beyond the built-in demo
-- Test-aware changes, authenticated review history and richer multi-file workflows
+Our focus is the gap between seeing a problem and giving an AI agent the right source context to help solve it.
 
 ---
 
 <div align="center">
 
-**Built by Priyanshu & Suhani**
-
-*For developers, creators and businesses who want to change what they see — without losing control of what changes.*
-
-**Real screenshots show current behavior. Generated concept artwork shows our vision. We never use a mockup as proof of a shipped feature.**
+**Your interface is the starting point. Your code stays reviewable.**
 
 </div>
