@@ -22,6 +22,7 @@ export function App() {
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [promoCode, setPromoCode] = useState('');
   const [promoApplied, setPromoApplied] = useState(false);
+  const [checkoutEmail, setCheckoutEmail] = useState('');
   const [isPlacingOrder, setIsPlacingOrder] = useState(false);
   const [orderComplete, setOrderComplete] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -84,6 +85,7 @@ export function App() {
   };
 
   const handlePlaceOrder = () => {
+    // Demo starting fixture: this button handler does not yet validate checkoutEmail.
     setIsPlacingOrder(true);
     setTimeout(() => {
       setIsPlacingOrder(false);
@@ -347,9 +349,9 @@ export function App() {
             {orderComplete ? (
               <div className="order-success-view">
                 <div className="success-icon">✓</div>
-                <h3>Order Confirmed!</h3>
-                <p>Order <strong>#SF-8924</strong> has been placed.</p>
-                <p className="sub-text">A confirmation email has been dispatched to your inbox.</p>
+                <h3>Demo Order Complete</h3>
+                <p>Simulated order <strong>#SF-8924</strong>.</p>
+                <p className="sub-text">No payment was charged and no email was sent.</p>
                 <button
                   type="button"
                   className="btn btn-primary"
@@ -382,7 +384,25 @@ export function App() {
                           <div className="item-details">
                             <h4 className="item-title">{item.name}</h4>
                             <span className="item-variant">Finish: {item.color}</span>
-                            <span className="item-qty">Qty: {item.quantity}</span>
+                            {/* Demo starting fixture: cart controls are not connected yet; keep the product-page stepper working. */}
+                            <div className="quantity-stepper" role="group" aria-label={`Cart quantity for ${item.color}`}>
+                              <button
+                                type="button"
+                                className="step-btn"
+                                aria-label={`Decrease cart quantity for ${item.color}`}
+                                disabled={item.quantity <= 1}
+                              >
+                                −
+                              </button>
+                              <span className="quantity-value">{item.quantity}</span>
+                              <button
+                                type="button"
+                                className="step-btn"
+                                aria-label={`Increase cart quantity for ${item.color}`}
+                              >
+                                +
+                              </button>
+                            </div>
                           </div>
                           <div className="item-price">
                             ${(item.price * item.quantity).toFixed(2)}
@@ -425,6 +445,21 @@ export function App() {
                         <strong>Total</strong>
                         <strong>${finalTotal.toFixed(2)}</strong>
                       </div>
+                    </div>
+
+                    <div className="selector-group">
+                      <label className="selector-label" htmlFor="checkout-email">Email</label>
+                      <input
+                        id="checkout-email"
+                        name="email"
+                        type="email"
+                        required
+                        className="promo-input"
+                        autoComplete="email"
+                        placeholder="you@example.com"
+                        value={checkoutEmail}
+                        onChange={(e) => setCheckoutEmail(e.target.value)}
+                      />
                     </div>
 
                     <button
