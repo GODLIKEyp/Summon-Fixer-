@@ -1,4 +1,4 @@
-[README-4.md](https://github.com/user-attachments/files/33903789/README-4.md)
+[README_Summon_Fixer_Final.md](https://github.com/user-attachments/files/33903935/README_Summon_Fixer_Final.md)
 <div align="center">
 
 # ⚡ Summon Fixer
@@ -28,6 +28,13 @@ The problem is *right in front of you* — yet fixing it sends you on a scavenge
 **What if your website was the interface to your codebase?**
 
 Click the broken element, describe what should happen, and review an AI-generated source change **in context**. That is the experience we're building with Summon Fixer.
+
+### ⚡ The experience we're building — in four frames
+
+![Four-part concept storyboard showing visual element selection, a plain-English instruction, a Codex source-code proposal, and the intended post-approval browser update](docs/images/vision-storyboard.png)
+
+> **PRODUCT VISION / CONCEPT ART — NOT A LIVE DEMO SCREENSHOT.** This four-panel illustration shows the complete experience we are building: **select → describe → review → see the change**. In today's verified MVP, the first three stages work as a proposal-and-review flow. The fourth stage—actually applying an approved change and seeing it hot-reload—is **not yet implemented**; the writer deliberately returns `SAFE_WRITE_UNAVAILABLE`.
+
 
 ## The problem
 
@@ -139,11 +146,9 @@ See [demo scenarios, prompts and acceptance criteria](apps/demo/DEMO_SCENARIOS.m
 
 Our vision is a context-aware visual companion that understands *which* element you mean, traces *why* it behaves that way, proposes changes across relevant code, lets you choose the level of control, verifies the result, and gives you a working application back.
 
-### Concept storyboard · future experience
+### The four-frame vision
 
-![Concept illustration of the long-term Summon Fixer point-prompt-review-apply workflow](docs/images/vision-storyboard.png)
-
-> **ARTWORK / FUTURE PRODUCT VISION — NOT A CURRENT PRODUCT SCREENSHOT.** This generated storyboard illustrates the proposed end-to-end journey, including successful approved file application and immediate hot reload. **Those last two steps are not available in the present implementation.** The accurate MVP status appears [below](#transparent-feature-status).
+The concept storyboard near the top of this README visualizes our north-star journey, **from selecting a live UI element to a verified, applied change**. It is intentionally labeled as **future-facing concept art** because automatic application and hot reload are still on the roadmap. The accurate implementation status appears [below](#transparent-feature-status).
 
 ### Our north-star experience
 
@@ -176,7 +181,7 @@ The tested integration is on **[`integration/vertical-slice`](https://github.com
 - Two available loopback ports (examples below: 7890 and 5185)
 
 ```bash
-git clone --single-branch --branch integration/vertical-slice   https://github.com/GODLIKEyp/Summon-Fixer-.git
+git clone --single-branch --branch integration/vertical-slice https://github.com/GODLIKEyp/Summon-Fixer-.git
 cd Summon-Fixer-
 npm ci
 npm run build
@@ -185,7 +190,8 @@ npm run build
 ### Option A — Local deterministic demo (no model calls)
 
 ```bash
-npm run summon -- dev --fake --port 7890   --command "npm run --workspace demo dev -- --host 127.0.0.1 --port 5185 --strictPort"
+npm run summon -- dev --fake --port 7890 \
+  --command "npm run --workspace demo dev -- --host 127.0.0.1 --port 5185 --strictPort"
 ```
 
 The `--fake` mode is for testing the browser pipeline. Its outputs are **not Codex-generated proposals**.
@@ -196,7 +202,10 @@ The `--fake` mode is for testing the browser pipeline. Its outputs are **not Cod
 codex --version
 codex login status
 
-CODEX_BIN_PATH="$(command -v codex)" npm run summon -- dev   --port 7890   --proposal-timeout-ms 120000   --command "npm run --workspace demo dev -- --host 127.0.0.1 --port 5185 --strictPort"
+CODEX_BIN_PATH="$(command -v codex)" npm run summon -- dev \
+  --port 7890 \
+  --proposal-timeout-ms 120000 \
+  --command "npm run --workspace demo dev -- --host 127.0.0.1 --port 5185 --strictPort"
 ```
 
 Open **http://127.0.0.1:5185**. Activate Summon, select a page element, submit a prompt, and inspect its source proposal. **Do not include `--fake` for real model use.** The selected Codex model comes from the developer's local CLI configuration, not a guarantee about account entitlements. Authorized project context may be sent to the configured model provider and consume usage.
