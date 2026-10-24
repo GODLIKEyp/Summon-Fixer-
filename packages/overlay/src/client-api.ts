@@ -1,189 +1,95 @@
-import type {
-  TaskRequest,
-  TaskState,
-  EditApprovalResponse,
-} from '@summon-fixer/contracts';
+import type { TaskRequest, TaskState, EditApprovalResponse } from '@summon-fixer/contracts';
 
-export interface ClientApiOptions {
-  apiPrefix?: string;
+export type ApiErrorKind = 'timeout' | 'authorization' | 'validation' | 'connectivity' | 'execution';
+export class SummonApiError extends Error {
+  constructor(message: string, public readonly kind: ApiErrorKind, public readonly status = 0,
+    public readonly code = 'ERR_NETWORK', public readonly details?: unknown) {
+    super(message);
+    this.name = 'SummonApiError';
+  }
 }
+export interface ClientApiOptions { apiPrefix?: string; timeoutMs?: number }
 
 export class SummonApiClient {
-  private apiPrefix: string;
+  private readonly apiPrefix: string;
+  private readonly timeoutMs: number;
+  private session: Promise<string> | null = null;
 
   constructor(options: ClientApiOptions = {}) {
     this.apiPrefix = options.apiPrefix ?? '/__summon/v1';
+    this.timeoutMs = options.timeoutMs ?? 15_000;
   }
 
-  /**
-   * Health check to verify dev server bridge and loopback engine connectivity.
-   */
-  async checkHealth(): Promise<{ status: string; bridge: string; engineConnected: boolean; message?: string }> {
+  private async fetchJson(path: string, init: RequestInit): Promise<any> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const res = await fetch(`${this.apiPrefix}/health`, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-      });
+      const res = await fetch(`${this.apiPrefix}${path}`, { ...init, credentials: 'same-origin', redirect: 'error', signal: controller.signal });
+      const data = await res.json().catch(() => null);
       if (!res.ok) {
-        return {
-          status: 'error',
-          bridge: 'reachable',
-          engineConnected: false,
-          message: `Server returned HTTP ${res.status}`,
-        };
+        const code = data?.error?.code ?? 'ERR_HTTP';
+        const kind: ApiErrorKind = res.status === 401 || res.status === 403 ? 'authorization'
+          : res.status === 408 || res.status === 504 || /TIMEOUT/.test(code) ? 'timeout'
+          : res.status === 502 || res.status === 503 ? 'connectivity'
+          : res.status < 500 ? 'validation' : 'execution';
+        throw new SummonApiError(data?.error?.message ?? `Request failed (HTTP ${res.status}).`, kind, res.status, code, data?.error?.details);
       }
-      return await res.json();
+      if (!data) throw new SummonApiError('Bridge returned an invalid response.', 'execution', res.status, 'ERR_INVALID_RESPONSE');
+      return data;
     } catch (err) {
-      return {
-        status: 'error',
-        bridge: 'unreachable',
-        engineConnected: false,
-        message: err instanceof Error ? err.message : 'Network request failed',
-      };
+      if (err instanceof SummonApiError) throw err;
+      if (controller.signal.aborted) throw new SummonApiError('Request timed out. Its outcome is unknown; check the task before retrying.', 'timeout', 0, 'ERR_TIMEOUT');
+      throw new SummonApiError('Unable to reach the local Summon bridge. Check the development server and connection.', 'connectivity');
+    } finally { clearTimeout(timer); }
+  }
+
+  private async request(path: string, body?: unknown): Promise<any> {
+    if (!this.session) {
+      this.session = this.fetchJson('/session', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Summon-Bootstrap': '1' }, body: '{}',
+      }).then(data => {
+        if (typeof data.capability !== 'string' || !/^[a-f0-9]{64}$/.test(data.capability)) {
+          throw new SummonApiError('Invalid browser session response.', 'authorization', 401, 'ERR_SESSION_UNAUTHORIZED');
+        }
+        return data.capability;
+      }).catch(err => { this.session = null; throw err; });
+    }
+    const capability = await this.session;
+    try {
+      return await this.fetchJson(path, {
+        method: body === undefined ? 'GET' : 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Summon-Session': capability },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    } catch (err) {
+      // Never replay a mutation automatically. A reload can establish a new session.
+      if (err instanceof SummonApiError && err.status === 401) this.session = null;
+      throw err;
     }
   }
 
-  /**
-   * Submits an untrusted TaskRequest to the Summon Fixer engine.
-   */
+  async checkHealth(): Promise<{ status: string; bridge: string; engineConnected: boolean; message?: string }> {
+    try { return await this.request('/health'); }
+    catch (err) { return { status: 'error', bridge: 'unreachable', engineConnected: false, message: (err as Error).message }; }
+  }
   async createTask(request: TaskRequest): Promise<{ taskId: string; state?: TaskState }> {
-    let res: Response;
-    try {
-      res = await fetch(`${this.apiPrefix}/tasks`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body: JSON.stringify(request),
-      });
-    } catch (err) {
-      throw new Error(
-        `Failed to reach Summon Fixer bridge: ${err instanceof Error ? err.message : 'Network error'}`
-      );
-    }
-
-    if (!res.ok) {
-      const errBody = await res.json().catch(() => ({}));
-      const msg = errBody?.error?.message || errBody?.message || `HTTP ${res.status} ${res.statusText}`;
-      throw new Error(`Engine request failed: ${msg}`);
-    }
-
-    const data = await res.json();
-    const task = data.task || data.state || data;
-    return {
-      taskId: data.taskId || task.taskId,
-      state: data.state || data.task,
-    };
+    const data = await this.request('/tasks', request);
+    const state = data.state || data.task;
+    return { taskId: data.taskId || state?.taskId, state };
   }
-
-  /**
-   * Polls the authoritative task state from the engine.
-   */
   async getTask(taskId: string): Promise<TaskState> {
-    let res: Response;
-    try {
-      res = await fetch(`${this.apiPrefix}/tasks/${encodeURIComponent(taskId)}`, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-      });
-    } catch (err) {
-      throw new Error(
-        `Failed to connect to Summon Fixer bridge: ${err instanceof Error ? err.message : 'Network error'}`
-      );
-    }
-
-    if (!res.ok) {
-      const errBody = await res.json().catch(() => ({}));
-      const msg = errBody?.error?.message || errBody?.message || `HTTP ${res.status} ${res.statusText}`;
-      throw new Error(`Failed to fetch task: ${msg}`);
-    }
-
-    const data = await res.json();
+    const data = await this.request(`/tasks/${encodeURIComponent(taskId)}`);
     return data.task || data;
   }
-
-  /**
-   * Submits a user approval or rejection for proposed file edits.
-   */
   async submitApproval(taskId: string, approval: EditApprovalResponse): Promise<{ success: boolean; state?: TaskState }> {
-    let res: Response;
-    try {
-      res = await fetch(`${this.apiPrefix}/tasks/${encodeURIComponent(taskId)}/approval`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body: JSON.stringify(approval),
-      });
-    } catch (err) {
-      throw new Error(
-        `Failed to reach bridge for approval: ${err instanceof Error ? err.message : 'Network error'}`
-      );
-    }
-
-    if (!res.ok) {
-      const errBody = await res.json().catch(() => ({}));
-      const msg = errBody?.error?.message || errBody?.message || `HTTP ${res.status} ${res.statusText}`;
-      throw new Error(`Approval submission failed: ${msg}`);
-    }
-
-    const data = await res.json();
-    return {
-      success: true,
-      state: data.state || data.task,
-    };
+    const data = await this.request(`/tasks/${encodeURIComponent(taskId)}/approval`, approval);
+    return { success: true, state: data.state || data.task };
   }
-
-  /**
-   * Requests cancellation of an in-flight task.
-   */
   async cancelTask(taskId: string, reason?: string): Promise<{ success: boolean }> {
-    let res: Response;
-    try {
-      res = await fetch(`${this.apiPrefix}/tasks/${encodeURIComponent(taskId)}/cancel`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body: JSON.stringify({ reason: reason || 'Cancelled by user from overlay' }),
-      });
-    } catch (err) {
-      throw new Error(
-        `Failed to reach bridge for cancellation: ${err instanceof Error ? err.message : 'Network error'}`
-      );
-    }
-
-    if (!res.ok) {
-      const errBody = await res.json().catch(() => ({}));
-      const msg = errBody?.error?.message || errBody?.message || `HTTP ${res.status}`;
-      throw new Error(`Task cancellation failed: ${msg}`);
-    }
-
-    return await res.json();
+    return this.request(`/tasks/${encodeURIComponent(taskId)}/cancel`, { reason });
   }
-
-  /**
-   * Resolves a server-side verified source location for a sourceId.
-   */
-  async resolveSource(sourceId: string): Promise<{
-    sourceId: string;
-    file: string;
-    line: number;
-    column: number;
-    revision?: string;
-  } | null> {
-    try {
-      const res = await fetch(`${this.apiPrefix}/source/resolve?sourceId=${encodeURIComponent(sourceId)}`, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-      });
-      if (!res.ok) return null;
-      return await res.json();
-    } catch {
-      return null;
-    }
+  async resolveSource(sourceId: string): Promise<{ sourceId: string; file: string; line: number; column: number; revision?: string } | null> {
+    try { return await this.request(`/source/resolve?sourceId=${encodeURIComponent(sourceId)}`); }
+    catch (err) { if (err instanceof SummonApiError && err.code === 'ERR_SOURCE_NOT_FOUND') return null; throw err; }
   }
 }

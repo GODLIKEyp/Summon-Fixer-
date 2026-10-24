@@ -97,9 +97,8 @@ export function getAccessibleLabel(el: Element): string | undefined {
 /**
  * Extracts verified source location from DOM element via:
  * 1. data-summon-id / data-summon-source
- * 2. React Fiber debugSource (_debugSource on fiber node)
  *
- * Guaranteed: strictly returns verified mappings; never invents a source location.
+ * The bridge verifies the ID and revision; DOM attributes alone are not authority.
  */
 export function extractVerifiedSource(el: Element): {
   sourceId?: string;
@@ -133,53 +132,6 @@ export function extractVerifiedSource(el: Element): {
         sourceLocation,
       };
     }
-  }
-
-  const summonSrcEl = el.closest('[data-summon-source]');
-  if (summonSrcEl) {
-    const rawLoc = summonSrcEl.getAttribute('data-summon-source')!;
-    const parts = rawLoc.split(':');
-    if (parts.length >= 3) {
-      const line = parseInt(parts[parts.length - 2], 10);
-      const column = parseInt(parts[parts.length - 1], 10);
-      const file = parts.slice(0, parts.length - 2).join(':');
-      if (!isNaN(line) && !isNaN(column) && file) {
-        return {
-          sourceId: `src_${file}_${line}_${column}`,
-          sourceLocation: { file, line, column },
-        };
-      }
-    }
-  }
-
-  // 2. React Fiber _debugSource inspection (available in React 17/18/19 dev builds)
-  try {
-    const domObj = el as unknown as Record<string, unknown>;
-    const fiberKey = Object.keys(domObj).find(
-      (k) => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')
-    );
-
-    if (fiberKey && domObj[fiberKey]) {
-      let fiber: any = domObj[fiberKey];
-      while (fiber) {
-        if (fiber._debugSource) {
-          const { fileName, lineNumber, columnNumber } = fiber._debugSource;
-          if (fileName && typeof lineNumber === 'number') {
-            return {
-              sourceId: `react_${fileName}_${lineNumber}_${columnNumber || 0}`,
-              sourceLocation: {
-                file: fileName,
-                line: lineNumber,
-                column: columnNumber || 0,
-              },
-            };
-          }
-        }
-        fiber = fiber.return;
-      }
-    }
-  } catch {
-    // Non-fatal if fiber inspection fails
   }
 
   // No verified source mapping available

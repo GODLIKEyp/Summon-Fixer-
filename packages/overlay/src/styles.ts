@@ -751,6 +751,21 @@ export const OVERLAY_STYLES = `
   animation: summonSpin 0.7s linear infinite;
 }
 
+.summon-source-review pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow: auto;
+  padding: 10px;
+  font: 12px/1.5 ui-monospace, monospace;
+  text-align: left;
+  user-select: text;
+}
+.summon-diff-before { background: #451a2433; border-left: 3px solid #fb7185; }
+.summon-diff-after { background: #064e3b33; border-left: 3px solid #34d399; }
+.summon-review-binding { overflow-wrap: anywhere; font-size: 10px; color: #94a3b8; margin: 10px 0; }
+.summon-approval-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+
 @keyframes summonSpin {
   to { transform: rotate(360deg); }
 }

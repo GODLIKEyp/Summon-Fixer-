@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { URL } from 'node:url';
+import { randomBytes, timingSafeEqual, createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { resolve, relative, dirname } from 'node:path';
 import { safeValidateTaskRequest } from '@summon-fixer/contracts';
@@ -16,7 +17,7 @@ export function isLoopbackUrl(rawUrl: string): boolean {
   try {
     const parsed = new URL(rawUrl);
     const host = parsed.hostname.toLowerCase();
-    return (
+    return ['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password && (
       host === '127.0.0.1' ||
       host === 'localhost' ||
       host === '::1' ||
@@ -77,9 +78,12 @@ function resolveProjectWorkspaceRoot(optionsRoot?: string): string {
 export function createBridgeMiddleware(
   options: SummonFixerPluginOptions,
   sourceRegistry: SourceRegistry,
-  serverRoot?: string
+  serverRoot?: string,
+  getAllowedOrigin: () => string | undefined = () => undefined
 ) {
   const apiPrefix = options.apiPrefix || '/__summon/v1';
+  if (!/^\/[a-zA-Z0-9/_-]+$/.test(apiPrefix) || apiPrefix.endsWith('/')) throw new Error('Invalid Summon API prefix');
+  const sessionToken = randomBytes(32).toString('hex');
   const rawEngineUrl =
     options.engineUrl || process.env.SUMMON_ENGINE_URL || 'http://127.0.0.1:3883';
   const engineToken =
@@ -106,45 +110,43 @@ export function createBridgeMiddleware(
     const pathname = parsedUrl.pathname;
     const method = (req.method || 'GET').toUpperCase();
 
-    // 1. Enforce browser-origin check for cross-origin defense
+    // Vite CORS must be disabled before this middleware is installed (see index.ts).
+    res.removeHeader('Access-Control-Allow-Origin');
+    res.removeHeader('Access-Control-Allow-Credentials');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    const reject = (status: number, code: string, message: string) => {
+      res.statusCode = status;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: { code, message } }));
+    };
+    const allowedOrigin = getAllowedOrigin();
+    if (!allowedOrigin || !isLoopbackUrl(allowedOrigin)) return reject(503, 'ERR_BRIDGE_ORIGIN_UNAVAILABLE', 'Local bridge origin is not configured.');
+    const expected = new URL(allowedOrigin);
     const headers = req.headers || {};
+    if (headers.host !== expected.host) return reject(403, 'ERR_FORBIDDEN_HOST', 'Host does not match the local development server.');
     const origin = headers.origin;
-    if (origin) {
-      try {
-        const originUrl = new URL(origin);
-        const originHost = originUrl.hostname.toLowerCase();
-        const reqHost = (headers.host || '').split(':')[0].toLowerCase();
-        const isPermittedOrigin =
-          originHost === '127.0.0.1' ||
-          originHost === 'localhost' ||
-          originHost === reqHost;
-
-        if (!isPermittedOrigin) {
-          res.statusCode = 403;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(
-            JSON.stringify({
-              error: {
-                code: 'ERR_FORBIDDEN_ORIGIN',
-                message: `Cross-origin request from '${origin}' rejected by Summon Fixer bridge.`,
-              },
-            })
-          );
-          return;
-        }
-      } catch {
-        res.statusCode = 400;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(
-          JSON.stringify({
-            error: {
-              code: 'ERR_MALFORMED_ORIGIN',
-              message: 'Invalid Origin header format.',
-            },
-          })
-        );
-        return;
+    if ((origin && origin !== expected.origin) || (headers['sec-fetch-site'] && headers['sec-fetch-site'] !== 'same-origin')) {
+      return reject(403, 'ERR_FORBIDDEN_ORIGIN', 'Request must come from the same development origin.');
+    }
+    if (method === 'OPTIONS') return reject(403, 'ERR_FORBIDDEN_ORIGIN', 'Cross-origin preflight is not supported.');
+    if (method !== 'GET') {
+      if (origin !== expected.origin) return reject(403, 'ERR_FORBIDDEN_ORIGIN', 'Mutation requires the exact development origin.');
+      if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(headers['content-type'] || '')) {
+        return reject(415, 'ERR_UNSUPPORTED_CONTENT_TYPE', 'Content-Type must be application/json.');
       }
+    }
+    if (method === 'POST' && pathname === apiPrefix + '/session') {
+      if (headers['x-summon-bootstrap'] !== '1') return reject(403, 'ERR_SESSION_BOOTSTRAP', 'Session bootstrap header required.');
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ capability: sessionToken }));
+      return;
+    }
+    const capability = headers['x-summon-session'];
+    if (typeof capability !== 'string' || !/^[a-f0-9]{64}$/.test(capability) ||
+        !timingSafeEqual(Buffer.from(capability), Buffer.from(sessionToken))) {
+      return reject(401, 'ERR_SESSION_UNAUTHORIZED', 'Browser session is missing or expired. Reload the page.');
     }
 
     // 2. Strict route allowlist matching
@@ -277,7 +279,8 @@ export function createBridgeMiddleware(
 
         if (engineHealthRes.ok) {
           engineConnected = true;
-          engineDetails = await engineHealthRes.json().catch(() => null);
+          const health = await engineHealthRes.json().catch(() => null) as any;
+          engineDetails = health ? { status: health.status, runnerMode: health.runnerMode } : null;
         }
       } catch {
         engineConnected = false;
@@ -393,59 +396,68 @@ export function createBridgeMiddleware(
         textContent?: string;
       }> = [];
 
-      if (sourceId) {
-        const mapping = sourceRegistry.resolve(sourceId);
-        if (mapping) {
-          const clientRevision = taskRequest.context?.sourceSelection?.revision;
-          if (clientRevision && mapping.revision && clientRevision !== mapping.revision) {
-            res.statusCode = 409;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(
-              JSON.stringify({
-                error: {
-                  code: 'ERR_STALE_SOURCE_REVISION',
-                  message: `Source revision mismatch for sourceId '${sourceId}': client sent '${clientRevision}' but registry has '${mapping.revision}'. The file may have been modified since the element was selected. Re-select the element.`,
-                },
-              })
-            );
-            return;
-          }
-
-          // Resolve relative path to canonical engine workspace root
-          let targetAbsPath = mapping.absolutePath
-            ? resolve(mapping.absolutePath)
-            : resolve(viteRoot, mapping.file);
-          try {
-            targetAbsPath = realpathSync(targetAbsPath);
-          } catch {
-            // keep resolved target path
-          }
-
-          const workspaceRelativePath = relative(workspaceRoot, targetAbsPath).replace(/\\/g, '/');
-
-          const elementContext = taskRequest.context?.metadata?.elementContext as
-            | Record<string, unknown>
-            | undefined;
-
-          sourceHints.push({
-            filePath: workspaceRelativePath,
-            lineRange: {
-              start: mapping.line,
-              end: mapping.line,
+      if (!sourceId) return reject(400, 'ERR_SOURCE_REQUIRED', 'Select an element with a verified source mapping.');
+      const mapping = sourceRegistry.resolve(sourceId);
+      if (!mapping) return reject(404, 'ERR_SOURCE_NOT_FOUND', 'Source mapping is unknown or invalidated. Re-select the element.');
+      if (!taskRequest.context?.sourceSelection?.revision) return reject(400, 'ERR_SOURCE_REVISION_REQUIRED', 'Source revision is required. Re-select the element.');
+      const clientRevision = taskRequest.context?.sourceSelection?.revision;
+      if (!mapping.revision || clientRevision !== mapping.revision) {
+        res.statusCode = 409;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(
+          JSON.stringify({
+            error: {
+              code: 'ERR_STALE_SOURCE_REVISION',
+              message: `Source revision mismatch for sourceId '${sourceId}': client sent '${clientRevision}' but registry has '${mapping.revision}'. The file may have been modified since the element was selected. Re-select the element.`,
             },
-            componentName: mapping.elementTag,
-            elementTag: mapping.elementTag,
-            textContent:
-              typeof elementContext?.textContent === 'string'
-                ? elementContext.textContent
-                : undefined,
-          });
+          })
+        );
+        return;
+      }
 
-          // Ensure targetFiles points to the verified workspace-relative path if not provided
-          if (!taskRequest.targetFiles || taskRequest.targetFiles.length === 0) {
-            taskRequest.targetFiles = [workspaceRelativePath];
-          }
-        }
+      // Resolve relative path to canonical engine workspace root
+      let targetAbsPath = mapping.absolutePath
+        ? resolve(mapping.absolutePath)
+        : resolve(viteRoot, mapping.file);
+      try {
+        targetAbsPath = realpathSync(targetAbsPath);
+      } catch {
+        // keep resolved target path
+      }
+
+      const workspaceRelativePath = relative(workspaceRoot, targetAbsPath).replace(/\\/g, '/');
+      if (workspaceRelativePath.startsWith('../') || workspaceRelativePath === '..' || workspaceRelativePath.startsWith('/') || !workspaceRelativePath) {
+        return reject(403, 'ERR_SOURCE_OUTSIDE_WORKSPACE', 'Selected source is outside the engine workspace.');
+      }
+      try {
+        const revision = createHash('sha256').update(readFileSync(targetAbsPath)).digest('hex').slice(0, 12);
+        if (revision !== mapping.revision) return reject(409, 'ERR_STALE_SOURCE_REVISION', 'Source changed on disk. Re-select the element.');
+      } catch {
+        return reject(404, 'ERR_SOURCE_NOT_FOUND', 'Selected source is no longer available. Re-select the element.');
+      }
+
+      const elementContext = taskRequest.context?.metadata?.elementContext as
+        | Record<string, unknown>
+        | undefined;
+
+      sourceHints.push({
+        filePath: workspaceRelativePath,
+        lineRange: {
+          start: mapping.line,
+          end: mapping.line,
+        },
+        componentName: mapping.elementTag,
+        elementTag: mapping.elementTag,
+        textContent:
+          typeof elementContext?.textContent === 'string'
+            ? elementContext.textContent
+            : undefined,
+      });
+
+      taskRequest.targetFiles = [workspaceRelativePath];
+      if (taskRequest.context) {
+        taskRequest.context.activeFile = { path: workspaceRelativePath, sourceId, revision: mapping.revision };
+        taskRequest.context.relevantFiles = [];
       }
 
       const envelope = {
