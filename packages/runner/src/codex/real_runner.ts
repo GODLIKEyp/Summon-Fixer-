@@ -33,6 +33,82 @@ export class CodexExecutionError extends Error {
   }
 }
 
+/** Only schema-owned field names are allowed in diagnostics, never model values. */
+function schemaIssuePath(path: PropertyKey[]): string {
+  if (path.length === 1 && (path[0] === 'summary' || path[0] === 'edits')) return path[0];
+  if (path[0] === 'edits' && typeof path[1] === 'number') {
+    if (path.length === 2) return 'edits[]';
+    if (path.length === 3 && typeof path[2] === 'string'
+      && ['path', 'changeType', 'oldContent', 'newContent', 'description'].includes(path[2])) {
+      return `edits[].${path[2]}`;
+    }
+  }
+  return '$';
+}
+
+/**
+ * One exec invocation produces one turn. Message completion alone is not turn
+ * completion: unphased agent messages can be progress text or draft proposals.
+ * Select the last message by ordering, never the last *schema-valid* message.
+ */
+function parseCompletedProposal(stdout: string): CodexProposalOutput {
+  let finalText: unknown;
+  let messageCount = 0;
+  let turnStarted = false;
+  let turnCompleted = false;
+  let invalidOrder = false;
+  for (const line of stdout.split('\n')) {
+    if (!line.trim()) continue;
+    let event: any;
+    try { event = JSON.parse(line); }
+    catch { throw new CodexExecutionError('Codex returned malformed event output', { code: 'MALFORMED_OUTPUT' }); }
+    if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
+      throw new CodexExecutionError('Codex returned malformed event output', { code: 'MALFORMED_OUTPUT' });
+    }
+    // Inspect the entire stream, including events after apparent completion.
+    if (event.type === 'turn.failed' || event.type === 'error' || event.type === 'turn.cancelled') {
+      throw new CodexExecutionError('Codex reported a failed or cancelled turn', { code: 'TURN_FAILED' });
+    }
+    if (turnCompleted) invalidOrder = true;
+    if (event.type === 'turn.started') {
+      if (turnStarted || messageCount > 0) invalidOrder = true;
+      turnStarted = true;
+    }
+    if (event.type === 'turn.completed') turnCompleted = true;
+    if (event.type === 'item.completed' && event.item?.type === 'agent_message') {
+      messageCount++;
+      finalText = event.item.text;
+    }
+  }
+  if (invalidOrder) throw new CodexExecutionError('Codex returned events outside a single completed turn', { code: 'MALFORMED_OUTPUT' });
+  if (messageCount === 0) throw new CodexExecutionError('Codex completed without returning valid proposal output', { code: 'MISSING_OUTPUT' });
+  if (!turnCompleted) throw new CodexExecutionError('Codex exited without a turn.completed event', { code: 'INCOMPLETE_TURN' });
+
+  const invalid = (reason: string, issues: { path: string; code: string }[] = [], issueCount = issues.length) =>
+    new CodexExecutionError(
+      `Codex output failed schema validation (${reason}; final agent message #${messageCount}${issues.length
+        ? '; ' + issues.map((issue) => `${issue.path}:${issue.code}`).join(', ') : ''})`,
+      { code: 'MALFORMED_SCHEMA', reason, messageCount, issueCount, issues }
+    );
+  if (typeof finalText !== 'string') throw invalid('invalid_message_text');
+  let structured: unknown;
+  try { structured = JSON.parse(finalText); }
+  catch { throw invalid('invalid_json'); }
+  const parsed = CodexProposalOutputSchema.safeParse(structured);
+  if (!parsed.success) {
+    // Never expose Zod messages/inputs or JSON parser errors: they may contain
+    // source text, credentials or arbitrary property names from model output.
+    throw invalid('schema_mismatch', parsed.error.issues.slice(0, 5).map((issue) => ({
+      path: schemaIssuePath(issue.path), code: issue.code,
+    })), parsed.error.issues.length);
+  }
+  return {
+    summary: parsed.data.summary,
+    edits: parsed.data.edits.map((edit) => ({ ...edit, changeType: edit.changeType as FileChangeType,
+      oldContent: edit.oldContent ?? null, newContent: edit.newContent ?? null })),
+  };
+}
+
 /**
  * Searches candidate locations for the Codex CLI binary.
  */
@@ -168,19 +244,14 @@ export class RealCodexRunner implements CodexRunnerInterface {
       writeFileSync(schemaFile, JSON.stringify(CODEX_OUTPUT_SCHEMA), { flag: 'wx', mode: 0o600 });
       let observed = '';
       let reportedEvent = false;
-      let reportedProposal = false;
       const observe = (text: string) => {
         observed += text;
         const lines = observed.split('\n');
         observed = lines.pop() ?? '';
         for (const line of lines) {
           try {
-            const event = JSON.parse(line);
+            JSON.parse(line);
             if (!reportedEvent) { reportedEvent = true; report('first_event'); }
-            if (!reportedProposal && event.type === 'item.completed' && event.item?.type === 'agent_message'
-              && CodexProposalOutputSchema.safeParse(JSON.parse(event.item.text)).success) {
-              reportedProposal = true; report('proposal_received');
-            }
           } catch { /* Authoritative validation runs after process completion. */ }
         }
       };
@@ -194,38 +265,9 @@ export class RealCodexRunner implements CodexRunnerInterface {
       if (result.exitCode !== 0) {
         throw new CodexExecutionError(`Codex process exited with code ${result.exitCode}`, { code: 'NONZERO_EXIT' });
       }
-      let output: CodexProposalOutput | undefined;
-      let invalidFinal = false;
-      for (const line of result.stdout.split('\n')) {
-        if (!line.trim()) continue;
-        let event: any;
-        try { event = JSON.parse(line); }
-        catch { throw new CodexExecutionError('Codex returned malformed event output', { code: 'MALFORMED_OUTPUT' }); }
-        if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
-          throw new CodexExecutionError('Codex returned malformed event output', { code: 'MALFORMED_OUTPUT' });
-        }
-        if (event.type === 'turn.failed' || event.type === 'error' || event.type === 'turn.cancelled') {
-          throw new CodexExecutionError('Codex reported a failed or cancelled turn', { code: 'TURN_FAILED' });
-        }
-        if (event.type === 'item.completed' && event.item?.type === 'agent_message') {
-          // Commentary before the first structured answer is not a proposal.
-          // Once an answer exists, later malformed output permanently fails it.
-          let structured: unknown;
-          try { structured = JSON.parse(event.item.text); } catch { structured = null; }
-          const parsed = CodexProposalOutputSchema.safeParse(structured);
-          if (!parsed.success) {
-            if (output || event.item.phase !== 'commentary') invalidFinal = true;
-          } else {
-            output = {
-              summary: parsed.data.summary,
-              edits: parsed.data.edits.map((edit) => ({ ...edit, changeType: edit.changeType as FileChangeType,
-                oldContent: edit.oldContent ?? null, newContent: edit.newContent ?? null })),
-            };
-          }
-        }
-      }
-      if (invalidFinal) throw new CodexExecutionError('Codex output failed schema validation', { code: 'MALFORMED_SCHEMA' });
-      if (!output) throw new CodexExecutionError('Codex completed without returning valid proposal output', { code: 'MISSING_OUTPUT' });
+      const output = parseCompletedProposal(result.stdout);
+      // A schema-shaped intermediate message is not yet a received proposal.
+      report('proposal_received');
       report('completed');
       return output;
     } catch (error) {

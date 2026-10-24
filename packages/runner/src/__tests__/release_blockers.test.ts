@@ -196,20 +196,21 @@ describe('Actual local subprocess event handling (no model)', () => {
     ['turn.failed', { type: 'turn.failed', error: { message: 'DO_NOT_LEAK_SECRET' } }],
     ['malformed JSON', message('not json')], ['invalid schema', message('{"bad":true}')],
   ])('rejects a valid proposal followed by %s', async (_, terminal) => {
-    const path = executable(`console.log(${JSON.stringify(JSON.stringify(valid))}); process.stdout.write(${JSON.stringify(JSON.stringify(terminal))});`);
+    const path = executable(`console.log(${JSON.stringify(JSON.stringify(valid))}); console.log(${JSON.stringify(JSON.stringify(terminal))}); process.stdout.write(JSON.stringify({type:'turn.completed'}));`);
     await expect(new RealCodexRunner(path).propose({ prompt: 'fixture', workspaceRoot: root }))
       .rejects.toThrow(/failed|schema/);
   });
 
   it('accepts a slow valid result within a configured deadline and emits sanitized live stages', async () => {
     const diagnostics: CodexDiagnostic[] = [];
-    const path = executable(`console.log(JSON.stringify({type:'thread.started'})); setTimeout(() => console.log(${JSON.stringify(JSON.stringify(valid))}), 80);`);
+    const path = executable(`console.log(JSON.stringify({type:'thread.started'})); console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'Inspecting the source'}})); setTimeout(() => { console.log(${JSON.stringify(JSON.stringify(valid))}); process.stdout.write(JSON.stringify({type:'turn.completed'})); }, 80);`);
     const result = await new RealCodexRunner(path).propose({ prompt: 'PRIVATE_PROMPT', workspaceRoot: root,
       timeoutMs: 1500, onDiagnostic: (value) => diagnostics.push(value) });
     expect(result.summary).toBe('fixture');
     expect(diagnostics.map((value) => value.stage)).toEqual(expect.arrayContaining(['spawned', 'first_output', 'first_event', 'proposal_received', 'exited', 'completed']));
     expect(JSON.stringify(diagnostics)).not.toMatch(/PRIVATE_PROMPT|output.json|DO_NOT_LEAK_SECRET/);
     expect(diagnostics.findIndex((value) => value.stage === 'first_event')).toBeLessThan(diagnostics.findIndex((value) => value.stage === 'exited'));
+    expect(diagnostics.findIndex((value) => value.stage === 'proposal_received')).toBeGreaterThan(diagnostics.findIndex((value) => value.stage === 'exited'));
   });
 
   it('cleans the private schema directory and keeps prompt out of argv on failure', async () => {

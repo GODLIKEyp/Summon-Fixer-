@@ -874,7 +874,7 @@ describe('Summon Fixer Phase 5A — Engine Security Remediation Regression Suite
       };
       writeFileSync(
         malformedScript,
-        `#!/bin/sh\necho '${JSON.stringify(malformedItem)}'\nexit 0\n`,
+        `#!/bin/sh\necho '${JSON.stringify(malformedItem)}'\necho '{"type":"turn.completed"}'\nexit 0\n`,
         { mode: 0o755 }
       );
       const runner = new RealCodexRunner(malformedScript);
