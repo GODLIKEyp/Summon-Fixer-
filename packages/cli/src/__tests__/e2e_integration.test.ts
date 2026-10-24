@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,8 +13,62 @@ import {
   instrumentJsx,
 } from '@summon-fixer/vite-plugin';
 import { SummonApiClient } from '@summon-fixer/overlay';
-import { createTimestamp, type TaskRequest } from '@summon-fixer/contracts';
+import { createTimestamp, type TaskRequest, type SourceSelection } from '@summon-fixer/contracts';
 import { resolveWorkspaceRoot } from '../workspace.js';
+
+const nativeFetch = globalThis.fetch;
+const apiPrefix = '/__summon/v1';
+
+// Node fetch does not supply the browser's Origin header. Add only that browser
+// behavior for this fixture's bridge URL; keep real HTTP, bootstrap and client
+// session handling intact, and never decorate direct engine requests.
+function emulateBrowserOrigin(origin: string): () => void {
+  const spy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.origin !== origin || !url.pathname.startsWith(apiPrefix + '/')) {
+      return nativeFetch(input, init);
+    }
+    const headers = new Headers(input instanceof Request ? input.headers : undefined);
+    new Headers(init?.headers).forEach((value, key) => headers.set(key, value));
+    if (!headers.has('Origin')) headers.set('Origin', origin);
+    return nativeFetch(input, { ...init, headers });
+  });
+  return () => spy.mockRestore();
+}
+
+async function bootstrapSession(origin: string): Promise<string> {
+  const res = await nativeFetch(`${origin}${apiPrefix}/session`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Summon-Bootstrap': '1' },
+    body: '{}',
+  });
+  expect(res.status).toBe(200);
+  expect(res.headers.get('cache-control')).toBe('no-store');
+  const { capability } = await res.json();
+  if (typeof capability !== 'string' || !/^[a-f0-9]{64}$/.test(capability)) {
+    throw new Error('Fixture bootstrap did not return a valid session capability');
+  }
+  return capability;
+}
+
+function authorizedFetch(origin: string, capability: string, path: string, init: RequestInit = {}) {
+  const headers = new Headers({ Origin: origin, 'X-Summon-Session': capability, 'Content-Type': 'application/json' });
+  new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+  return nativeFetch(`${origin}${apiPrefix}${path}`, { ...init, headers });
+}
+
+function registerCheckout(content: string, workspace: string, registry: SourceRegistry): SourceSelection {
+  registry.clear();
+  const transformed = instrumentJsx(content, join(workspace, 'apps/demo/src/App.tsx'), registry,
+    { root: join(workspace, 'apps/demo') });
+  expect(transformed).not.toBeNull();
+  const button = transformed!.code.match(/<button\b[^>]*\bid="checkout-now-button"[^>]*>/)?.[0];
+  const sourceId = button?.match(/data-summon-id="([^"]+)"/)?.[1];
+  const revision = button?.match(/data-summon-rev="([^"]+)"/)?.[1];
+  if (!sourceId || !revision) throw new Error('Checkout instrumentation must include source ID and revision');
+  expect(registry.resolve(sourceId)).toMatchObject({ elementTag: 'button', revision });
+  return { sourceId, revision };
+}
 
 describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () => {
   // =========================================================================
@@ -26,18 +80,16 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
     let bridgeServer: Server;
     let bridgeUrl: string;
     let registry: SourceRegistry;
-    let checkoutButtonSourceId: string;
+    let checkoutSelection: SourceSelection;
+    let session: string;
+    let restoreFetch: (() => void) | undefined;
+    let fakeRunner: FakeCodexRunner;
     let originalAppContent: string;
 
     beforeAll(async () => {
       // 1. Create disposable workspace
       tempDir = mkdtempSync(join(tmpdir(), 'summon-fake-e2e-'));
       mkdirSync(join(tempDir, 'apps/demo/src'), { recursive: true });
-
-      // Initialize git repository
-      execSync('git init -b main', { cwd: tempDir, stdio: 'ignore' });
-      execSync('git config user.name "Integration Test"', { cwd: tempDir, stdio: 'ignore' });
-      execSync('git config user.email "test@summonfixer.internal"', { cwd: tempDir, stdio: 'ignore' });
 
       // Write root package.json
       writeFileSync(
@@ -61,40 +113,15 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
       );
       writeFileSync(join(tempDir, 'apps/demo/src/App.tsx'), originalAppContent);
 
-      execSync('git add . && git commit -m "initial commit"', {
-        cwd: tempDir,
-        stdio: 'ignore',
-      });
-
-      // 2. Instrument App.tsx and register in SourceRegistry
+      // Register the exact bytes written to disk, using emitted DOM attributes.
       registry = new SourceRegistry();
-      const appAbsPath = join(tempDir, 'apps/demo/src/App.tsx');
-      const instrumented = instrumentJsx(
-        originalAppContent,
-        appAbsPath,
-        registry,
-        { root: join(tempDir, 'apps/demo') }
-      );
-
-      expect(instrumented).not.toBeNull();
-      expect(registry.size).toBeGreaterThan(0);
-
-      // Find the sourceId for the checkout-now-button
-      // The button in App.tsx has id="checkout-now-button"
-      let foundId: string | undefined;
-      for (const [id, mapping] of (registry as any).mappings.entries()) {
-        if (mapping.file.includes('App.tsx') && mapping.line >= 264 && mapping.line <= 272) {
-          foundId = id;
-          break;
-        }
-      }
-      expect(foundId).toBeDefined();
-      checkoutButtonSourceId = foundId!;
+      checkoutSelection = registerCheckout(originalAppContent, tempDir, registry);
 
       // 3. Start local Engine using FakeCodexRunner
+      fakeRunner = new FakeCodexRunner();
       engine = await startEngine({
         workspaceRoot: tempDir,
-        useFakeRunner: true,
+        runner: fakeRunner,
         port: 0,
       });
 
@@ -107,7 +134,8 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
           apiPrefix: '/__summon/v1',
         },
         registry,
-        join(tempDir, 'apps/demo')
+        join(tempDir, 'apps/demo'),
+        () => bridgeUrl
       );
 
       bridgeServer = createServer((req, res) => {
@@ -123,9 +151,18 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
 
       const addr = bridgeServer.address() as { port: number };
       bridgeUrl = `http://127.0.0.1:${addr.port}`;
+      session = await bootstrapSession(bridgeUrl);
+      restoreFetch = emulateBrowserOrigin(bridgeUrl);
+    });
+
+    beforeEach(() => {
+      // Invalidation in one test must not poison another test's selection.
+      expect(readFileSync(join(tempDir, 'apps/demo/src/App.tsx'), 'utf8')).toBe(originalAppContent);
+      checkoutSelection = registerCheckout(originalAppContent, tempDir, registry);
     });
 
     afterAll(async () => {
+      restoreFetch?.();
       if (bridgeServer) {
         await new Promise((r) => bridgeServer.close(r));
       }
@@ -138,7 +175,10 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
     });
 
     it('validates bridge GET /__summon/v1/health returns connected status', async () => {
-      const res = await fetch(`${bridgeUrl}/__summon/v1/health`);
+      const unauthorized = await nativeFetch(`${bridgeUrl}${apiPrefix}/health`, { headers: { Origin: bridgeUrl } });
+      expect(unauthorized.status).toBe(401);
+      expect((await unauthorized.json()).error.code).toBe('ERR_SESSION_UNAUTHORIZED');
+      const res = await authorizedFetch(bridgeUrl, session, '/health');
       expect(res.status).toBe(200);
       const data = await res.json();
       expect(data.status).toBe('ok');
@@ -148,12 +188,12 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
     });
 
     it('resolves verified source mapping via bridge GET /__summon/v1/source/resolve', async () => {
-      const res = await fetch(
-        `${bridgeUrl}/__summon/v1/source/resolve?sourceId=${encodeURIComponent(checkoutButtonSourceId)}`
-      );
+      const res = await authorizedFetch(bridgeUrl, session,
+        `/source/resolve?sourceId=${encodeURIComponent(checkoutSelection.sourceId)}`);
       expect(res.status).toBe(200);
       const mapping = await res.json();
-      expect(mapping.sourceId).toBe(checkoutButtonSourceId);
+      expect(mapping.sourceId).toBe(checkoutSelection.sourceId);
+      expect(mapping.revision).toBe(checkoutSelection.revision);
       expect(mapping.file).toBe('src/App.tsx');
       expect(mapping.elementTag).toBe('button');
       expect(mapping.line).toBeGreaterThanOrEqual(264);
@@ -173,9 +213,7 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
         createdAt: createTimestamp(),
         context: {
           relevantFiles: [],
-          sourceSelection: {
-            sourceId: checkoutButtonSourceId,
-          },
+          sourceSelection: { ...checkoutSelection },
           metadata: {
             elementContext: {
               tagName: 'button',
@@ -227,7 +265,7 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
       await expect(client.submitApproval(taskId, {
         taskId, taskVersion: task.version, proposalDigest: task.proposal!.proposalDigest!,
         decision: 'approved', respondedAt: createTimestamp(),
-      })).rejects.toThrow('Automatic application is disabled');
+      })).rejects.toMatchObject({ status: 503, code: 'SAFE_WRITE_UNAVAILABLE' });
       task = await client.getTask(taskId);
       expect(task.status).toBe('failed');
       expect(task.error?.code).toBe('SAFE_WRITE_UNAVAILABLE');
@@ -236,7 +274,7 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
 
       // 6. Simulate Vite HMR file change invalidation
       registry.invalidateFile(join(tempDir, 'apps/demo/src/App.tsx'));
-      expect(registry.resolve(checkoutButtonSourceId)).toBeUndefined();
+      expect(registry.resolve(checkoutSelection.sourceId)).toBeUndefined();
     });
 
     it('enforces rejection: cancels task without modifying target file', async () => {
@@ -252,18 +290,20 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
         createdAt: createTimestamp(),
         context: {
           relevantFiles: [],
-          sourceSelection: { sourceId: checkoutButtonSourceId },
+          sourceSelection: { ...checkoutSelection },
         },
       };
 
       const { taskId } = await client.createTask(taskRequest);
 
       let task = await client.getTask(taskId);
-      while (task.status !== 'awaiting_approval' && task.status !== 'failed') {
+      const deadline = Date.now() + 10_000;
+      while (task.status !== 'awaiting_approval' && task.status !== 'failed' && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 100));
         task = await client.getTask(taskId);
       }
 
+      expect(task.status).toBe('awaiting_approval');
       const contentBefore = readFileSync(join(tempDir, 'apps/demo/src/App.tsx'), 'utf-8');
 
       // Reject the proposal
@@ -306,7 +346,7 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
       expect(resBadToken.status).toBe(401);
     });
 
-    it('handles unmapped source IDs gracefully without crash', async () => {
+    it('rejects unknown source IDs with 404 before any engine task starts', async () => {
       const client = new SummonApiClient({
         apiPrefix: `${bridgeUrl}/__summon/v1`,
       });
@@ -319,20 +359,21 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
         createdAt: createTimestamp(),
         context: {
           relevantFiles: [],
-          sourceSelection: { sourceId: 'src_unmapped_source_99999_1_1' },
+          sourceSelection: { sourceId: 'src_unmapped_source_99999_1_1', revision: checkoutSelection.revision },
         },
       };
 
-      // Bridge must not throw or 500 when sourceId is not in registry
-      const createResult = await client.createTask(taskRequest);
-      expect(createResult.taskId).toBeDefined();
-
-      let task = await client.getTask(createResult.taskId);
-      while (task.status !== 'awaiting_approval' && task.status !== 'failed') {
-        await new Promise((r) => setTimeout(r, 100));
-        task = await client.getTask(createResult.taskId);
-      }
-      expect(task.status).toBe('awaiting_approval');
+      const taskIdsBefore = engine.server.executor.getAllTasks().map(task => task.taskId);
+      const callsBefore = fakeRunner.getCallHistory().length;
+      const res = await authorizedFetch(bridgeUrl, session, '/tasks', {
+        method: 'POST', body: JSON.stringify(taskRequest),
+      });
+      expect(res.status).toBe(404);
+      expect((await res.json()).error.code).toBe('ERR_SOURCE_NOT_FOUND');
+      await expect(client.createTask(taskRequest)).rejects.toMatchObject({ status: 404, code: 'ERR_SOURCE_NOT_FOUND' });
+      expect(engine.server.executor.getAllTasks().map(task => task.taskId)).toEqual(taskIdsBefore);
+      expect(fakeRunner.getCallHistory()).toHaveLength(callsBefore);
+      expect(readFileSync(join(tempDir, 'apps/demo/src/App.tsx'), 'utf8')).toBe(originalAppContent);
     });
 
     it('rejects approval with stale or mismatched proposal digest', async () => {
@@ -348,17 +389,19 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
         createdAt: createTimestamp(),
         context: {
           relevantFiles: [],
-          sourceSelection: { sourceId: checkoutButtonSourceId },
+          sourceSelection: { ...checkoutSelection },
         },
       };
 
       const { taskId } = await client.createTask(taskRequest);
       let task = await client.getTask(taskId);
-      while (task.status !== 'awaiting_approval' && task.status !== 'failed') {
+      const deadline = Date.now() + 10_000;
+      while (task.status !== 'awaiting_approval' && task.status !== 'failed' && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 100));
         task = await client.getTask(taskId);
       }
 
+      expect(task.status).toBe('awaiting_approval');
       // Submit approval with mismatched proposal digest
       await expect(
         client.submitApproval(taskId, {
@@ -368,7 +411,9 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
           decision: 'approved',
           respondedAt: createTimestamp(),
         })
-      ).rejects.toThrow();
+      ).rejects.toMatchObject({ status: 409, code: 'DIGEST_MISMATCH' });
+      expect((await client.getTask(taskId)).status).toBe('awaiting_approval');
+      expect(readFileSync(join(tempDir, 'apps/demo/src/App.tsx'), 'utf8')).toBe(originalAppContent);
     });
   });
 
@@ -382,7 +427,8 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
     let realBridgeServer: Server;
     let realBridgeUrl: string;
     let realRegistry: SourceRegistry;
-    let realCheckoutButtonSourceId: string;
+    let realCheckoutSelection: SourceSelection;
+    let restoreRealFetch: (() => void) | undefined;
     let realOriginalAppContent: string;
 
     beforeAll(async () => {
@@ -418,31 +464,8 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
       );
       writeFileSync(join(realTempDir, 'apps/demo/src/App.tsx'), realOriginalAppContent);
 
-      execSync('git add . && git commit -m "initial commit"', {
-        cwd: realTempDir,
-        stdio: 'ignore',
-      });
-
-      // 2. Instrument JSX to get verified source mapping
       realRegistry = new SourceRegistry();
-      const appAbsPath = join(realTempDir, 'apps/demo/src/App.tsx');
-      const instrumented = instrumentJsx(
-        realOriginalAppContent,
-        appAbsPath,
-        realRegistry,
-        { root: join(realTempDir, 'apps/demo') }
-      );
-
-      expect(instrumented).not.toBeNull();
-      let foundId: string | undefined;
-      for (const [id, mapping] of (realRegistry as any).mappings.entries()) {
-        if (mapping.file.includes('App.tsx') && mapping.line >= 264 && mapping.line <= 272) {
-          foundId = id;
-          break;
-        }
-      }
-      expect(foundId).toBeDefined();
-      realCheckoutButtonSourceId = foundId!;
+      realCheckoutSelection = registerCheckout(realOriginalAppContent, realTempDir, realRegistry);
 
       // 3. Start engine with RealCodexRunner
       const runner = new RealCodexRunner(codexBin);
@@ -461,7 +484,8 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
           apiPrefix: '/__summon/v1',
         },
         realRegistry,
-        join(realTempDir, 'apps/demo')
+        join(realTempDir, 'apps/demo'),
+        () => realBridgeUrl
       );
 
       realBridgeServer = createServer((req, res) => {
@@ -477,9 +501,12 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
 
       const addr = realBridgeServer.address() as { port: number };
       realBridgeUrl = `http://127.0.0.1:${addr.port}`;
+      await bootstrapSession(realBridgeUrl);
+      restoreRealFetch = emulateBrowserOrigin(realBridgeUrl);
     });
 
     afterAll(async () => {
+      restoreRealFetch?.();
       if (realBridgeServer) {
         await new Promise((r) => realBridgeServer.close(r));
       }
@@ -509,9 +536,7 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
         createdAt: createTimestamp(),
         context: {
           relevantFiles: [],
-          sourceSelection: {
-            sourceId: realCheckoutButtonSourceId,
-          },
+          sourceSelection: { ...realCheckoutSelection },
           metadata: {
             elementContext: {
               tagName: 'button',
@@ -562,7 +587,7 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
       await expect(client.submitApproval(taskId, {
         taskId, taskVersion: task.version, proposalDigest: task.proposal!.proposalDigest!,
         decision: 'approved', respondedAt: createTimestamp(),
-      })).rejects.toThrow('Automatic application is disabled');
+      })).rejects.toMatchObject({ status: 503, code: 'SAFE_WRITE_UNAVAILABLE' });
       task = await client.getTask(taskId);
       expect(task.error?.code).toBe('SAFE_WRITE_UNAVAILABLE');
       expect(task.application).toEqual({ status: 'not_applied', appliedEditsCount: 0 });
