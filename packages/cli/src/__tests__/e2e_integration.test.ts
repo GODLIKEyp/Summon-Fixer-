@@ -144,7 +144,7 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
       expect(data.status).toBe('ok');
       expect(data.bridge).toBe('ready');
       expect(data.engineConnected).toBe(true);
-      expect(data.engineUrl).toBe(engine.url);
+      expect(data).not.toHaveProperty('engineUrl');
     });
 
     it('resolves verified source mapping via bridge GET /__summon/v1/source/resolve', async () => {

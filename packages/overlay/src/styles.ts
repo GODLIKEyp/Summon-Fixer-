@@ -503,9 +503,70 @@ export const OVERLAY_STYLES = `
 .summon-edit-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  max-height: 150px;
+  gap: 8px;
+  max-height: 220px;
   overflow-y: auto;
+}
+
+/* Proposed Code Diff Viewer */
+.summon-diff-viewer {
+  background: #020617;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.summon-diff-file-header {
+  background: #0f172a;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+}
+
+.summon-diff-content {
+  max-height: 140px;
+  overflow-y: auto;
+  padding: 4px 0;
+  tab-size: 2;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.summon-diff-line {
+  padding: 1px 10px;
+  min-height: 18px;
+}
+
+.summon-diff-add {
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+}
+
+.summon-diff-del {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+}
+
+.summon-diff-hunk {
+  background: rgba(56, 189, 248, 0.1);
+  color: #38bdf8;
+  font-weight: 600;
+}
+
+.summon-diff-ctx {
+  color: #94a3b8;
+}
+
+.summon-diff-empty {
+  padding: 6px 10px;
+  color: #64748b;
+  font-style: italic;
 }
 
 .summon-edit-item {
