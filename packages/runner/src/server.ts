@@ -276,6 +276,16 @@ export class EngineServer {
       return;
     }
 
+    if (approvalValidation.data.taskId !== cleanId) {
+      this.sendJson(res, 400, {
+        error: {
+          code: 'TASK_ID_MISMATCH',
+          message: `Approval body taskId ('${approvalValidation.data.taskId}') does not match URL task ID ('${cleanId}')`,
+        },
+      });
+      return;
+    }
+
     const task = await this.executor.applyApproval(cleanId, approvalValidation.data);
     this.sendJson(res, 200, { task });
   }

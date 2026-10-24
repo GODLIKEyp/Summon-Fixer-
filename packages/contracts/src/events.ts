@@ -71,7 +71,7 @@ export const TaskEditsAppliedEventSchema = z.object({
   type: z.literal('task:edits_applied'),
   taskId: z.string().min(1).max(128),
   timestamp: z.string().datetime(),
-  edits: z.array(FileEditSchema),
+  edits: z.array(FileEditSchema).max(100),
 });
 export type TaskEditsAppliedEvent = z.infer<typeof TaskEditsAppliedEventSchema>;
 
@@ -88,7 +88,7 @@ export const TaskCompletedEventSchema = z.object({
   taskId: z.string().min(1).max(128),
   timestamp: z.string().datetime(),
   outcome: CompletionOutcomeSchema,
-  edits: z.array(FileEditSchema).default([]),
+  edits: z.array(FileEditSchema).max(100).default([]),
 });
 export type TaskCompletedEvent = z.infer<typeof TaskCompletedEventSchema>;
 

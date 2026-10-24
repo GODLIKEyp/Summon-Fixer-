@@ -86,7 +86,7 @@ export const TaskRequestSchema = z.object({
   /**
    * Arbitrary client-defined metadata.
    */
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 export type TaskRequest = z.infer<typeof TaskRequestSchema>;
 
@@ -188,7 +188,7 @@ export type VerificationCheck = z.infer<typeof VerificationCheckSchema>;
  */
 export const VerificationOutcomeSchema = z.object({
   status: VerificationStatusSchema,
-  checks: z.array(VerificationCheckSchema).default([]),
+  checks: z.array(VerificationCheckSchema).max(100).default([]),
   summary: z.string().max(2000).optional(),
 });
 export type VerificationOutcome = z.infer<typeof VerificationOutcomeSchema>;
@@ -290,7 +290,7 @@ export const TaskStateSchema = z.object({
   /**
    * Targeted file paths for multi-file edits.
    */
-  targetFiles: z.array(z.string()).optional(),
+  targetFiles: z.array(z.string().min(1).max(500)).max(100).optional(),
 
   /**
    * Real-time progress details.
@@ -305,7 +305,7 @@ export const TaskStateSchema = z.object({
   /**
    * Array of individual file modifications.
    */
-  edits: z.array(FileEditSchema).default([]),
+  edits: z.array(FileEditSchema).max(100).default([]),
 
   /**
    * Typed verification outcome.
@@ -325,7 +325,7 @@ export const TaskStateSchema = z.object({
   /**
    * Execution log trail.
    */
-  logs: z.array(TaskLogEntrySchema).default([]),
+  logs: z.array(TaskLogEntrySchema).max(1000).default([]),
 
   /**
    * ISO 8601 creation timestamp.

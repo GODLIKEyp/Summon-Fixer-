@@ -3,6 +3,7 @@ import { existsSync, readdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
+import { z } from 'zod';
 import type {
   CodexRunnerInterface,
   CodexProposalInput,
@@ -10,6 +11,21 @@ import type {
   ProposedEdit,
 } from './types.js';
 import type { FileChangeType } from '@summon-fixer/contracts';
+
+export const MAX_CODEX_OUTPUT_BYTES = 2 * 1024 * 1024; // 2 MB limit
+
+export const CodexOutputEditSchema = z.object({
+  path: z.string().min(1, 'Path cannot be empty').max(500),
+  changeType: z.enum(['create', 'update', 'delete']),
+  oldContent: z.string().nullable().optional(),
+  newContent: z.string().nullable().optional(),
+  description: z.string().max(1000).optional(),
+});
+
+export const CodexProposalOutputSchema = z.object({
+  summary: z.string().min(1, 'Summary cannot be empty').max(2000),
+  edits: z.array(CodexOutputEditSchema).max(100),
+});
 
 export class CodexExecutionError extends Error {
   constructor(message: string, public readonly details?: unknown) {
@@ -164,8 +180,11 @@ export class RealCodexRunner implements CodexRunnerInterface {
 
       let stdoutBuffer = '';
       let stderrBuffer = '';
+      let totalOutputBytes = 0;
+      let killedDueToOversized = false;
       const rawEvents: unknown[] = [];
       let parsedOutput: CodexProposalOutput | null = null;
+      let lastSchemaError: z.ZodError | null = null;
 
       const timer = setTimeout(() => {
         child.kill('SIGTERM');
@@ -186,7 +205,27 @@ export class RealCodexRunner implements CodexRunnerInterface {
         }
       };
 
-      child.stdout.on('data', (chunk: Buffer) => {
+      const handleChunk = (chunk: Buffer, isStderr: boolean) => {
+        if (killedDueToOversized) return;
+        totalOutputBytes += chunk.length;
+        if (totalOutputBytes > MAX_CODEX_OUTPUT_BYTES) {
+          killedDueToOversized = true;
+          child.kill('SIGKILL');
+          cleanup();
+          rejectPromise(
+            new CodexExecutionError(
+              `Codex execution exceeded maximum output limit of ${MAX_CODEX_OUTPUT_BYTES} bytes`,
+              { code: 'OUTPUT_TOO_LARGE' }
+            )
+          );
+          return;
+        }
+
+        if (isStderr) {
+          stderrBuffer += chunk.toString('utf-8');
+          return;
+        }
+
         const text = chunk.toString('utf-8');
         stdoutBuffer += text;
 
@@ -208,24 +247,21 @@ export class RealCodexRunner implements CodexRunnerInterface {
             ) {
               try {
                 const structured = JSON.parse(event.item.text);
-                if (structured && Array.isArray(structured.edits)) {
+                const validated = CodexProposalOutputSchema.safeParse(structured);
+                if (validated.success) {
                   parsedOutput = {
-                    summary: structured.summary ?? 'Proposed changes',
-                    edits: structured.edits.map((e: Record<string, unknown>) => {
-                      let changeType: FileChangeType = 'update';
-                      if (e.changeType === 'create') changeType = 'create';
-                      else if (e.changeType === 'delete') changeType = 'delete';
-
-                      return {
-                        path: String(e.path ?? ''),
-                        changeType,
-                        oldContent: e.oldContent ? String(e.oldContent) : null,
-                        newContent: e.newContent ? String(e.newContent) : null,
-                        description: e.description ? String(e.description) : undefined,
-                      };
-                    }),
+                    summary: validated.data.summary,
+                    edits: validated.data.edits.map((e) => ({
+                      path: e.path,
+                      changeType: e.changeType as FileChangeType,
+                      oldContent: e.oldContent ?? null,
+                      newContent: e.newContent ?? null,
+                      description: e.description,
+                    })),
                     rawEvents,
                   };
+                } else {
+                  lastSchemaError = validated.error;
                 }
               } catch {
                 // Not JSON text yet
@@ -235,11 +271,10 @@ export class RealCodexRunner implements CodexRunnerInterface {
             // Non-JSON line from stdout
           }
         }
-      });
+      };
 
-      child.stderr.on('data', (chunk: Buffer) => {
-        stderrBuffer += chunk.toString('utf-8');
-      });
+      child.stdout.on('data', (chunk: Buffer) => handleChunk(chunk, false));
+      child.stderr.on('data', (chunk: Buffer) => handleChunk(chunk, true));
 
       child.on('error', (err) => {
         cleanup();
@@ -250,6 +285,18 @@ export class RealCodexRunner implements CodexRunnerInterface {
 
       child.on('close', (code) => {
         cleanup();
+        if (killedDueToOversized) return;
+
+        // Nonzero process exit MUST fail, even if partial output was parsed earlier
+        if (code !== 0) {
+          rejectPromise(
+            new CodexExecutionError(
+              `Codex process exited with code ${code}. Stderr: ${stderrBuffer.trim()}`,
+              { code, stderr: stderrBuffer }
+            )
+          );
+          return;
+        }
 
         if (stdoutBuffer.trim()) {
           try {
@@ -261,24 +308,21 @@ export class RealCodexRunner implements CodexRunnerInterface {
               typeof event.item?.text === 'string'
             ) {
               const structured = JSON.parse(event.item.text);
-              if (structured && Array.isArray(structured.edits)) {
+              const validated = CodexProposalOutputSchema.safeParse(structured);
+              if (validated.success) {
                 parsedOutput = {
-                  summary: structured.summary ?? 'Proposed changes',
-                  edits: structured.edits.map((e: Record<string, unknown>) => {
-                    let changeType: FileChangeType = 'update';
-                    if (e.changeType === 'create') changeType = 'create';
-                    else if (e.changeType === 'delete') changeType = 'delete';
-
-                    return {
-                      path: String(e.path ?? ''),
-                      changeType,
-                      oldContent: e.oldContent ? String(e.oldContent) : null,
-                      newContent: e.newContent ? String(e.newContent) : null,
-                      description: e.description ? String(e.description) : undefined,
-                    };
-                  }),
+                  summary: validated.data.summary,
+                  edits: validated.data.edits.map((e) => ({
+                    path: e.path,
+                    changeType: e.changeType as FileChangeType,
+                    oldContent: e.oldContent ?? null,
+                    newContent: e.newContent ?? null,
+                    description: e.description,
+                  })),
                   rawEvents,
                 };
+              } else {
+                lastSchemaError = validated.error;
               }
             }
           } catch {
@@ -291,11 +335,11 @@ export class RealCodexRunner implements CodexRunnerInterface {
           return;
         }
 
-        if (code !== 0) {
+        if (lastSchemaError) {
           rejectPromise(
             new CodexExecutionError(
-              `Codex process exited with code ${code}. Stderr: ${stderrBuffer.trim()}`,
-              { code, stderr: stderrBuffer }
+              `Codex output failed schema validation: ${lastSchemaError.message}`,
+              { code: 'MALFORMED_SCHEMA', details: lastSchemaError.format() }
             )
           );
           return;
@@ -305,7 +349,7 @@ export class RealCodexRunner implements CodexRunnerInterface {
         rejectPromise(
           new CodexExecutionError(
             `Codex completed without returning valid proposal output. Stderr: ${stderrBuffer.trim()}`,
-            { stdout: stdoutBuffer, stderr: stderrBuffer, rawEvents }
+            { code: 'MISSING_OUTPUT', stdout: stdoutBuffer, stderr: stderrBuffer, rawEvents }
           )
         );
       });

@@ -160,6 +160,6 @@ export const TaskContextSchema = z.object({
   /**
    * Extensible custom metadata key-values.
    */
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 export type TaskContext = z.infer<typeof TaskContextSchema>;

@@ -60,16 +60,12 @@ export class FakeCodexRunner implements CodexRunnerInterface {
         const lines = diskText.split('\n');
         const btnLineIdx = lines.findIndex((l) => l.includes('id="checkout-now-button"'));
         if (btnLineIdx !== -1) {
-          const classLineIdx = btnLineIdx > 0 && lines[btnLineIdx - 1].includes('className="btn btn-primary"')
-            ? btnLineIdx - 1
-            : btnLineIdx;
-
-          if (lines[classLineIdx].includes('className="btn btn-primary"')) {
-            oldContent = lines[classLineIdx];
-            newContent = lines[classLineIdx].replace(
+          if (btnLineIdx > 0 && lines[btnLineIdx - 1].includes('className="btn btn-primary"')) {
+            oldContent = `${lines[btnLineIdx - 1]}\n${lines[btnLineIdx]}`;
+            newContent = `${lines[btnLineIdx - 1].replace(
               'className="btn btn-primary"',
               'className="btn btn-primary" style={{ backgroundColor: "#9333ea" }} /* [FAKE RUNNER: purple] */'
-            );
+            )}\n${lines[btnLineIdx]}`;
           } else {
             oldContent = lines[btnLineIdx];
             newContent = `${lines[btnLineIdx]} /* [FAKE RUNNER: purple] */`;

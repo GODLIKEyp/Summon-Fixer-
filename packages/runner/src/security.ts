@@ -1,10 +1,11 @@
-import { realpathSync, existsSync } from 'node:fs';
+import { realpathSync, existsSync, lstatSync } from 'node:fs';
 import { resolve, relative, isAbsolute, dirname } from 'node:path';
 import type { IncomingMessage } from 'node:http';
 import {
   isPathAllowedByPolicy,
   normalizeWorkspacePath,
   type PermissionPolicy,
+  type FileChangeType,
 } from '@summon-fixer/contracts';
 
 export const MAX_REQUEST_BODY_BYTES = 1024 * 1024; // 1 MB limit
@@ -22,7 +23,7 @@ export class SecurityError extends Error {
 
 /**
  * Validates that a requested path is strictly contained within the canonical workspace root.
- * Resolves symlinks and rejects path traversal attempts.
+ * Enforces safe file containment using lstat, rejecting symlink targets and symlink path components.
  * Returns the canonical relative workspace path.
  */
 export function validateWorkspaceContainment(
@@ -54,26 +55,83 @@ export function validateWorkspaceContainment(
     );
   }
 
-  const resolvedTarget = isAbsolute(candidatePath)
-    ? resolve(candidatePath)
-    : resolve(canonicalRoot, candidatePath);
+  let relCandidate = candidatePath;
+  if (isAbsolute(candidatePath)) {
+    const relFromRoot = relative(canonicalRoot, candidatePath);
+    if (relFromRoot.startsWith('..') || isAbsolute(relFromRoot)) {
+      throw new SecurityError(
+        `Path resolves outside workspace root: '${candidatePath}'`,
+        403,
+        'WORKSPACE_ESCAPE'
+      );
+    }
+    relCandidate = relFromRoot;
+  }
 
-  // Check if file or existing ancestor directory escapes canonical root via symlinks
-  let canonicalTargetDir: string;
-  let filename: string;
+  let normalized: string;
+  try {
+    normalized = normalizeWorkspacePath(relCandidate);
+  } catch (err) {
+    throw new SecurityError(
+      `Path normalization failed: ${(err as Error).message}`,
+      400,
+      'INVALID_PATH'
+    );
+  }
 
-  if (existsSync(resolvedTarget)) {
+  // Walk every path segment from canonicalRoot down to target to reject any symlink components
+  const segments = normalized.split('/');
+  let currentPath = canonicalRoot;
+
+  for (const segment of segments) {
+    currentPath = resolve(currentPath, segment);
+
+    // Verify currentPath stays within canonicalRoot
+    const rel = relative(canonicalRoot, currentPath);
+    if (rel.startsWith('..') || isAbsolute(rel)) {
+      throw new SecurityError(
+        `Symlink escape detected: path escapes workspace root ('${candidatePath}')`,
+        403,
+        'WORKSPACE_ESCAPE'
+      );
+    }
+
+    // Use lstatSync to detect symlinks (including dangling symlinks)
     try {
-      const canonicalTarget = realpathSync(resolvedTarget);
-      const rel = relative(canonicalRoot, canonicalTarget);
-      if (rel.startsWith('..') || isAbsolute(rel)) {
+      const stat = lstatSync(currentPath);
+      if (stat.isSymbolicLink()) {
+        throw new SecurityError(
+          `Symlink escape detected: symlink targets and path components are forbidden for MVP ('${candidatePath}')`,
+          403,
+          'WORKSPACE_ESCAPE'
+        );
+      }
+    } catch (err: any) {
+      if (err instanceof SecurityError) throw err;
+      if (err.code === 'ENOENT') {
+        // Component does not exist on disk yet
+        continue;
+      }
+      throw new SecurityError(
+        `Failed to lstat path component: ${(err as Error).message}`,
+        400,
+        'CANONICALIZATION_FAILED'
+      );
+    }
+  }
+
+  // If target exists on disk, also verify realpath does not escape
+  if (existsSync(currentPath)) {
+    try {
+      const realTarget = realpathSync(currentPath);
+      const relTarget = relative(canonicalRoot, realTarget);
+      if (relTarget.startsWith('..') || isAbsolute(relTarget)) {
         throw new SecurityError(
           `Symlink escape detected: '${candidatePath}' resolves outside workspace root`,
           403,
           'WORKSPACE_ESCAPE'
         );
       }
-      return normalizeWorkspacePath(rel);
     } catch (err) {
       if (err instanceof SecurityError) throw err;
       throw new SecurityError(
@@ -82,43 +140,9 @@ export function validateWorkspaceContainment(
         'CANONICALIZATION_FAILED'
       );
     }
-  } else {
-    // For files to be created, find closest existing ancestor directory and verify it
-    let currentDir = dirname(resolvedTarget);
-    while (!existsSync(currentDir) && currentDir !== dirname(currentDir)) {
-      currentDir = dirname(currentDir);
-    }
-
-    try {
-      canonicalTargetDir = realpathSync(currentDir);
-    } catch (err) {
-      throw new SecurityError(
-        `Failed to resolve ancestor path: ${(err as Error).message}`,
-        400,
-        'CANONICALIZATION_FAILED'
-      );
-    }
-
-    const relDir = relative(canonicalRoot, canonicalTargetDir);
-    if (relDir.startsWith('..') || isAbsolute(relDir)) {
-      throw new SecurityError(
-        `Target directory resides outside workspace root: '${candidatePath}'`,
-        403,
-        'WORKSPACE_ESCAPE'
-      );
-    }
-
-    const relTarget = relative(canonicalRoot, resolvedTarget);
-    if (relTarget.startsWith('..') || isAbsolute(relTarget)) {
-      throw new SecurityError(
-        `Path resolves outside workspace root: '${candidatePath}'`,
-        403,
-        'WORKSPACE_ESCAPE'
-      );
-    }
-
-    return normalizeWorkspacePath(relTarget);
   }
+
+  return normalized;
 }
 
 /**
@@ -126,12 +150,29 @@ export function validateWorkspaceContainment(
  */
 export function validateEditPolicy(
   normalizedPath: string,
-  policy: PermissionPolicy
+  policy: PermissionPolicy,
+  changeType?: FileChangeType
 ): void {
   const allowed = isPathAllowedByPolicy(normalizedPath, policy);
   if (!allowed) {
     throw new SecurityError(
       `Access to '${normalizedPath}' is denied by the active permission policy`,
+      403,
+      'POLICY_DENIED'
+    );
+  }
+
+  if (changeType === 'create' && !policy.allowFileCreation) {
+    throw new SecurityError(
+      `File creation is forbidden by the active permission policy for '${normalizedPath}'`,
+      403,
+      'POLICY_DENIED'
+    );
+  }
+
+  if (changeType === 'delete' && !policy.allowFileDeletion) {
+    throw new SecurityError(
+      `File deletion is forbidden by the active permission policy for '${normalizedPath}'`,
       403,
       'POLICY_DENIED'
     );

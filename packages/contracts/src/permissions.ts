@@ -44,13 +44,13 @@ export const PermissionPolicySchema = z.object({
   /**
    * Relative workspace path patterns or directories where edits are permitted.
    */
-  allowedPaths: z.array(z.string().min(1).max(500)).default(() => [...DEFAULT_ALLOWED_PATHS]),
+  allowedPaths: z.array(z.string().min(1).max(500)).max(100).default(() => [...DEFAULT_ALLOWED_PATHS]),
 
   /**
    * Relative workspace path patterns strictly forbidden from modification.
    * Protects secret configuration while allowing sample files like .env.example.
    */
-  disallowedPaths: z.array(z.string().min(1).max(500)).default(() => [...DEFAULT_DISALLOWED_PATHS]),
+  disallowedPaths: z.array(z.string().min(1).max(500)).max(100).default(() => [...DEFAULT_DISALLOWED_PATHS]),
 
   /**
    * Whether shell commands may be executed by the runner.

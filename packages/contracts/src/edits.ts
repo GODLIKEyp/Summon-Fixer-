@@ -270,7 +270,7 @@ export const MultiFileEditPlanSchema = z
     /**
      * Preconditions that must be satisfied before these edits may be applied.
      */
-    preconditions: z.array(BaseContentPreconditionSchema).default([]),
+    preconditions: z.array(BaseContentPreconditionSchema).max(100).default([]),
 
     /**
      * Total count of files modified. If provided, must strictly match edits.length.
@@ -374,7 +374,7 @@ export const EditApprovalResponseSchema = z.object({
   /**
    * Optional base-content preconditions affirmed by the approver.
    */
-  preconditions: z.array(BaseContentPreconditionSchema).optional(),
+  preconditions: z.array(BaseContentPreconditionSchema).max(100).optional(),
 
   /**
    * Optional developer feedback or correction prompt on rejection.
