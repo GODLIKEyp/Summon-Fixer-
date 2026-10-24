@@ -7,15 +7,14 @@ import { startEngine, type EngineInstance } from '../engine.js';
 import { RealCodexRunner, resolveCodexBinaryPath } from '../codex/real_runner.js';
 import { createTimestamp } from '@summon-fixer/contracts';
 
-describe('Real Codex End-to-End Execution Flow', () => {
+describe.skipIf(process.env.SUMMON_RUN_REAL_CODEX_TESTS !== '1')('Real Codex End-to-End Execution Flow', () => {
   const codexBin = resolveCodexBinaryPath();
   let tempDir: string;
   let engine: EngineInstance;
 
   beforeAll(async () => {
     if (!codexBin) {
-      console.warn('Skipping Real Codex test: Codex binary not found');
-      return;
+      throw new Error('Real Codex tests were explicitly enabled but no binary was found');
     }
 
     tempDir = mkdtempSync(join(tmpdir(), 'summon-codex-e2e-'));
@@ -136,16 +135,16 @@ describe('Real Codex End-to-End Execution Flow', () => {
       }),
     });
 
-    expect(applyRes.status).toBe(200);
+    expect(applyRes.status).toBe(503);
     const applyData = await applyRes.json();
-    expect(applyData.task.status).toBe('completed');
-    expect(applyData.task.completion?.type).toBe('edits_applied');
+    expect(applyData.error.code).toBe('SAFE_WRITE_UNAVAILABLE');
+    expect(applyData.task.application).toEqual({ status: 'not_applied', appliedEditsCount: 0 });
 
-    // 5. Verify file on disk IS NOW MODIFIED to red
+    // 5. Verify no unsafe automatic write occurred
     const diskContentAfterApproval = readFileSync(
       join(tempDir, 'src/Button.tsx'),
       'utf-8'
     );
-    expect(diskContentAfterApproval).toContain(`'red'`);
+    expect(diskContentAfterApproval).toBe(diskContentBeforeApproval);
   }, 120_000); // 120s timeout for real LLM call
 });

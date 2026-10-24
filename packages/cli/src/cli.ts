@@ -1,3 +1,4 @@
+import { validateTimeoutMs } from '@summon-fixer/runner';
 import { runDev } from './dev.js';
 
 export async function runCli(argv: string[]): Promise<void> {
@@ -16,26 +17,31 @@ export async function runCli(argv: string[]): Promise<void> {
 
   if (command === 'dev') {
     let port: number | undefined;
+    let proposalTimeoutMs: number | undefined;
     let useFakeRunner = false;
     let engineOnly = false;
     let childCommand: string | undefined;
 
-    for (let i = 1; i < args.length; i++) {
-      const arg = args[i];
-      if (arg === '--port' && i + 1 < args.length) {
-        port = parseInt(args[++i], 10);
-      } else if (arg === '--fake') {
-        useFakeRunner = true;
-      } else if (arg === '--engine-only') {
-        engineOnly = true;
-      } else if (arg === '--command' && i + 1 < args.length) {
-        childCommand = args[++i];
-      }
-    }
-
     try {
+      for (let i = 1; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === '--proposal-timeout-ms') {
+          proposalTimeoutMs = validateTimeoutMs(Number(args[++i]));
+        } else if (arg === '--port') {
+          port = Number(args[++i]);
+          if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Port must be an integer from 0 to 65535');
+        } else if (arg === '--fake') {
+          useFakeRunner = true;
+        } else if (arg === '--engine-only') {
+          engineOnly = true;
+        } else if (arg === '--command' && i + 1 < args.length) {
+          childCommand = args[++i];
+        }
+      }
+
       await runDev({
         port,
+        proposalTimeoutMs,
         useFakeRunner,
         engineOnly,
         command: childCommand,
@@ -65,7 +71,8 @@ Commands:
   version         Display version
 
 Options for 'dev':
-  --port <number>       Specify loopback port (default: 7890 or random available)
+  --port <number>       Specify loopback port (default: 7890; use 0 for an available port)
+  --proposal-timeout-ms <ms>  Proposal deadline, 1–600000 (default: 60000)
   --fake                Use deterministic fake runner for testing without calling Codex
   --engine-only         Start engine only without spawning a child dev server
   --command <cmd>       Override the child development command (e.g. "vite")

@@ -1,14 +1,14 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
   existsSync,
   readFileSync,
-  writeFileSync,
-  renameSync,
-  unlinkSync,
   lstatSync,
 } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { spawn } from 'node:child_process';
+import { resolve } from 'node:path';
+import { replaceFileSafely, SafeWriteUnavailableError } from './safe-write.js';
+import { runManagedProcess, ManagedProcessError, MAX_VERIFICATION_OUTPUT_BYTES } from './process.js';
+import { DEFAULT_PROPOSAL_TIMEOUT_MS, validateTimeoutMs } from './deadline.js';
+import { CodexExecutionError } from './codex/real_runner.js';
 import ts from 'typescript';
 import {
   type TaskState,
@@ -42,6 +42,7 @@ export interface TaskExecutorOptions {
   policy?: PermissionPolicy;
   verificationCommand?: string;
   verificationTimeoutMs?: number;
+  proposalTimeoutMs?: number;
 }
 
 export class TaskExecutionError extends Error {
@@ -56,7 +57,7 @@ export class TaskExecutionError extends Error {
 }
 
 /**
- * Counts non-overlapping occurrences of a substring within a text.
+ * Counts overlapping occurrences (stops once ambiguity is established) of a substring within a text.
  */
 function countOccurrences(haystack: string, needle: string): number {
   if (!needle || !haystack) return 0;
@@ -64,12 +65,16 @@ function countOccurrences(haystack: string, needle: string): number {
   let pos = 0;
   while ((pos = haystack.indexOf(needle, pos)) !== -1) {
     count++;
-    pos += needle.length;
+    if (count > 1) break;
+    pos += 1;
   }
   return count;
 }
 
 export class TaskExecutor {
+  private readonly lifetime = new AbortController();
+  private readonly activeJobs = new Set<Promise<unknown>>();
+  private readonly proposalTimeoutMs: number;
   private readonly tasks = new Map<string, TaskState>();
   private readonly idempotencyRecords = new Map<string, IdempotencyRecord>();
   private readonly workspaceRoot: string;
@@ -83,7 +88,13 @@ export class TaskExecutor {
     this.runner = options.runner;
     this.defaultPolicy = options.policy ?? getDefaultPermissionPolicy('manual');
     this.verificationCommand = options.verificationCommand;
-    this.verificationTimeoutMs = options.verificationTimeoutMs ?? 30_000;
+    this.verificationTimeoutMs = validateTimeoutMs(options.verificationTimeoutMs ?? 30_000);
+    this.proposalTimeoutMs = validateTimeoutMs(options.proposalTimeoutMs ?? DEFAULT_PROPOSAL_TIMEOUT_MS);
+  }
+
+  async close(): Promise<void> {
+    this.lifetime.abort();
+    await Promise.allSettled([...this.activeJobs]);
   }
 
   getTask(taskId: string): TaskState | undefined {
@@ -95,6 +106,7 @@ export class TaskExecutor {
   }
 
   async createTask(envelope: TaskEnvelope): Promise<TaskState> {
+    if (this.lifetime.signal.aborted) throw new TaskExecutionError('Engine is stopping', 503, 'ENGINE_STOPPING');
     const { request, sourceHints } = envelope;
 
     // Reject auto mode until runtime auto permissions are implemented
@@ -153,6 +165,7 @@ export class TaskExecutor {
       workspaceRoot: this.workspaceRoot,
       targetFiles: validatedTargetFiles,
       edits: [],
+      application: { status: 'not_applied', appliedEditsCount: 0 },
       createdAt: now,
       updatedAt: now,
       logs: [
@@ -176,7 +189,7 @@ export class TaskExecutor {
     }
 
     // Launch background proposal workflow
-    this.runPlanningPhase(task, envelope).catch((err) => {
+    const job = this.runPlanningPhase(task, envelope).catch((err) => {
       this.failTask(
         task,
         'PLANNING_UNHANDLED_ERROR',
@@ -184,6 +197,8 @@ export class TaskExecutor {
         'execution'
       );
     });
+    this.activeJobs.add(job);
+    void job.finally(() => this.activeJobs.delete(job));
 
     return task;
   }
@@ -213,12 +228,51 @@ export class TaskExecutor {
     const planningStartTime = Date.now();
 
     try {
-      const proposalOutput = await this.runner.propose({
-        prompt: task.prompt,
-        workspaceRoot: task.workspaceRoot,
-        targetFiles: task.targetFiles,
-        sourceHints: envelope.sourceHints,
+      const controller = new AbortController();
+      const signal = AbortSignal.any([controller.signal, this.lifetime.signal]);
+      const timeout = setTimeout(() => controller.abort(), this.proposalTimeoutMs);
+      let abortWait: ReturnType<typeof setTimeout> | undefined;
+      let onAbort!: () => void;
+      const aborted = new Promise<never>((_, reject) => {
+        onAbort = () => {
+          // Allow the managed subprocess to finish bounded termination first.
+          abortWait = setTimeout(() => reject(new CodexExecutionError(
+            this.lifetime.signal.aborted ? 'Proposal cancelled during shutdown' : `Proposal timed out after ${this.proposalTimeoutMs}ms`,
+            { code: this.lifetime.signal.aborted ? 'ABORTED' : 'TIMEOUT' }
+          )), 1250);
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) onAbort();
       });
+      let proposalOutput;
+      try {
+        proposalOutput = await Promise.race([this.runner.propose({
+          prompt: task.prompt,
+          workspaceRoot: task.workspaceRoot,
+          targetFiles: task.targetFiles,
+          sourceHints: envelope.sourceHints,
+          timeoutMs: this.proposalTimeoutMs,
+          signal,
+          onDiagnostic: (diagnostic) => {
+            if (signal.aborted || task.status !== 'planning') return;
+            task.logs.push({ timestamp: createTimestamp(), level: 'info',
+              message: `Codex stage=${diagnostic.stage} elapsedMs=${diagnostic.elapsedMs} deadlineMs=${diagnostic.timeoutMs}` });
+          },
+        }), aborted]);
+        if (signal.aborted) throw new CodexExecutionError('Proposal cancelled or timed out', {
+          code: this.lifetime.signal.aborted ? 'ABORTED' : 'TIMEOUT',
+        });
+      } catch (error) {
+        if (error instanceof CodexExecutionError && (error.details as { code?: string } | undefined)?.code === 'TERMINATION_FAILED') throw error;
+        if (controller.signal.aborted && !this.lifetime.signal.aborted) {
+          throw new CodexExecutionError(`Proposal timed out after ${this.proposalTimeoutMs}ms`, { code: 'TIMEOUT' });
+        }
+        throw error;
+      } finally {
+        clearTimeout(timeout);
+        clearTimeout(abortWait);
+        signal.removeEventListener('abort', onAbort);
+      }
 
       // If no edits proposed, complete as read-only task
       if (!proposalOutput.edits || proposalOutput.edits.length === 0) {
@@ -414,13 +468,22 @@ export class TaskExecutor {
       );
     } catch (err) {
       const message = (err as Error).message;
-      const category: ErrorCategory =
-        err instanceof SecurityError ? 'policy' : 'execution';
-      this.failTask(task, 'PROPOSAL_GENERATION_FAILED', message, category);
+      const processCode = err instanceof CodexExecutionError
+        ? (err.details as { code?: string } | undefined)?.code : undefined;
+      const category: ErrorCategory = processCode === 'TIMEOUT' ? 'timeout'
+        : err instanceof SecurityError ? 'policy' : 'execution';
+      this.failTask(task, processCode ?? 'PROPOSAL_GENERATION_FAILED', message, category);
     }
   }
 
-  async applyApproval(
+  async applyApproval(taskId: string, approval: EditApprovalResponse): Promise<TaskState> {
+    if (this.lifetime.signal.aborted) throw new TaskExecutionError('Engine is stopping', 503, 'ENGINE_STOPPING');
+    const job = this.applyApprovalInternal(taskId, approval);
+    this.activeJobs.add(job);
+    try { return await job; } finally { this.activeJobs.delete(job); }
+  }
+
+  private async applyApprovalInternal(
     taskId: string,
     approval: EditApprovalResponse
   ): Promise<TaskState> {
@@ -611,8 +674,9 @@ export class TaskExecutor {
         (edit.newContent ?? '') +
         currentContent.slice(idx + edit.oldContent.length);
 
-      // Apply update using atomic staged replacement procedure
-      this.stageAndReplaceFile(absPath, nextContent);
+      // The production boundary fails closed until safe replacement is supported.
+      replaceFileSafely(absPath, nextContent);
+      task.application = { status: 'applied', appliedEditsCount: 1 };
       edit.status = 'applied';
       edit.appliedAt = createTimestamp();
 
@@ -646,12 +710,6 @@ export class TaskExecutor {
           verification: verificationOutcome,
         });
       } else {
-        this.failTask(
-          task,
-          'APPLY_FAILED',
-          `Verification checks failed after applying edits: ${verificationOutcome.checks[0]?.message ?? 'Checks failed'}`,
-          'execution'
-        );
         throw new TaskExecutionError(
           `Verification checks failed after applying edits: ${verificationOutcome.checks[0]?.message ?? 'Checks failed'}`,
           400,
@@ -665,41 +723,13 @@ export class TaskExecutor {
         (err.code === 'PRECONDITION_FAILED' || err.code === 'AMBIGUOUS_SNIPPET')
           ? 'preflight'
           : 'execution';
-      this.failTask(task, 'APPLY_FAILED', message, category);
+      const code = err instanceof TaskExecutionError || err instanceof SafeWriteUnavailableError ? err.code : 'APPLY_FAILED';
+      this.failTask(task, code, message, err instanceof SafeWriteUnavailableError ? 'policy' : category);
+      if (err instanceof SafeWriteUnavailableError) throw new TaskExecutionError(err.message, err.statusCode, err.code);
       throw err;
     }
 
     return task;
-  }
-
-  /**
-   * Applies single-file replacement using a safe staged write procedure.
-   * Ensures staging file is created in the same filesystem directory and atomically renamed.
-   */
-  private stageAndReplaceFile(absPath: string, nextContent: string): void {
-    const dir = dirname(absPath);
-    const stagingPath = resolve(
-      dir,
-      `.summon-stage-${Date.now()}-${randomBytes(6).toString('hex')}.tmp`
-    );
-
-    try {
-      writeFileSync(stagingPath, nextContent, { encoding: 'utf-8', mode: 0o644 });
-      renameSync(stagingPath, absPath);
-    } catch (err) {
-      try {
-        if (existsSync(stagingPath)) {
-          unlinkSync(stagingPath);
-        }
-      } catch {
-        // ignore unlink error
-      }
-      throw new TaskExecutionError(
-        `Failed to safely write update to '${absPath}': ${(err as Error).message}`,
-        500,
-        'WRITE_FAILED'
-      );
-    }
   }
 
   /**
@@ -802,73 +832,19 @@ export class TaskExecutor {
     timeoutMs: number
   ): Promise<VerificationOutcome> {
     const startTime = Date.now();
-    return new Promise<VerificationOutcome>((resolveOutcome) => {
-      const child = spawn(command, {
-        cwd,
-        shell: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-
-      let stdout = '';
-      let stderr = '';
-
-      const timer = setTimeout(() => {
-        child.kill('SIGTERM');
-        resolveOutcome({
-          status: 'failed',
-          checks: [
-            {
-              name: command,
-              status: 'failed',
-              message: `Verification command timed out after ${timeoutMs}ms`,
-              durationMs: Date.now() - startTime,
-            },
-          ],
-          summary: 'Verification timed out',
-        });
-      }, timeoutMs);
-
-      child.stdout?.on('data', (d) => (stdout += d.toString('utf-8')));
-      child.stderr?.on('data', (d) => (stderr += d.toString('utf-8')));
-
-      child.on('close', (code) => {
-        clearTimeout(timer);
-        const durationMs = Date.now() - startTime;
-        const passed = code === 0;
-        resolveOutcome({
-          status: passed ? 'passed' : 'failed',
-          checks: [
-            {
-              name: command,
-              status: passed ? 'passed' : 'failed',
-              message: passed
-                ? 'Verification command completed successfully'
-                : `Verification failed with exit code ${code}. Stderr: ${stderr.trim()}`,
-              durationMs,
-            },
-          ],
-          summary: passed
-            ? 'Verification command completed successfully'
-            : `Verification failed with exit code ${code}`,
-        });
-      });
-
-      child.on('error', (err) => {
-        clearTimeout(timer);
-        resolveOutcome({
-          status: 'failed',
-          checks: [
-            {
-              name: command,
-              status: 'failed',
-              message: `Failed to spawn verification process: ${err.message}`,
-              durationMs: Date.now() - startTime,
-            },
-          ],
-          summary: 'Verification process failed to start',
-        });
-      });
-    });
+    let status: 'passed' | 'failed' = 'failed';
+    let message: string;
+    try {
+      const result = await runManagedProcess({ command, cwd, shell: true, timeoutMs,
+        maxOutputBytes: MAX_VERIFICATION_OUTPUT_BYTES, signal: this.lifetime.signal });
+      status = result.exitCode === 0 ? 'passed' : 'failed';
+      message = status === 'passed' ? 'Verification command completed successfully'
+        : `Verification failed with exit code ${result.exitCode}`;
+    } catch (error) {
+      message = error instanceof ManagedProcessError ? `${error.code}: ${error.message}` : 'Verification process failed';
+    }
+    return { status, checks: [{ name: 'configured-verification', status, message,
+      durationMs: Date.now() - startTime }], summary: message };
   }
 
   private transitionStatus(task: TaskState, newStatus: TaskStatus, message?: string): void {

@@ -19,6 +19,8 @@ export interface EngineServerOptions {
   workspaceRoot: string;
   runner: CodexRunnerInterface;
   verificationCommand?: string;
+  verificationTimeoutMs?: number;
+  proposalTimeoutMs?: number;
 }
 
 export class EngineServer {
@@ -45,12 +47,16 @@ export class EngineServer {
       workspaceRoot: options.workspaceRoot,
       runner: options.runner,
       verificationCommand: options.verificationCommand,
+      verificationTimeoutMs: options.verificationTimeoutMs,
+      proposalTimeoutMs: options.proposalTimeoutMs,
     });
   }
 
   async start(): Promise<{ host: string; port: number; url: string }> {
     return new Promise((resolve, reject) => {
-      const srv = createServer((req, res) => this.handleRequest(req, res));
+      const srv = createServer((req, res) => {
+        void this.handleRequest(req, res).catch((err) => this.handleError(err, res));
+      });
 
       srv.on('error', (err) => {
         reject(err);
@@ -71,20 +77,26 @@ export class EngineServer {
   }
 
   async stop(): Promise<void> {
-    return new Promise((resolve) => {
-      if (this.server) {
-        this.server.close(() => {
-          this.server = null;
-          resolve();
-        });
-      } else {
-        resolve();
-      }
+    const server = this.server;
+    this.server = null;
+    // Stop accepting connections first, abort active jobs, then bound draining
+    // slow clients. No background proposal is allowed to outlive close().
+    const closed = new Promise<void>((resolve) => {
+      if (server) server.close(() => resolve());
+      else resolve();
     });
+    const drain = setTimeout(() => server?.closeAllConnections(), 1500);
+    try { await this.executor.close(); await closed; }
+    finally { clearTimeout(drain); }
   }
 
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const url = new URL(req.url ?? '/', `http://${this.host}`);
+    let url: URL;
+    try { url = new URL(req.url ?? '/', `http://${this.host}`); }
+    catch {
+      this.sendJson(res, 400, { error: { code: 'MALFORMED_REQUEST_TARGET', message: 'Invalid HTTP request target' } });
+      return;
+    }
     const pathname = url.pathname;
     const method = req.method?.toUpperCase() ?? 'GET';
 
@@ -116,6 +128,8 @@ export class EngineServer {
         status: 'ok',
         engine: 'summon-fixer',
         runnerMode: this.options.runner.mode,
+        automaticApplyAvailable: false,
+        applicationUnavailableCode: 'SAFE_WRITE_UNAVAILABLE',
       });
       return;
     }
@@ -286,13 +300,24 @@ export class EngineServer {
       return;
     }
 
-    const task = await this.executor.applyApproval(cleanId, approvalValidation.data);
-    this.sendJson(res, 200, { task });
+    try {
+      const task = await this.executor.applyApproval(cleanId, approvalValidation.data);
+      this.sendJson(res, 200, { task });
+    } catch (error) {
+      if (error instanceof TaskExecutionError || error instanceof SecurityError) {
+        this.sendJson(res, error.statusCode, { error: { code: error.code, message: error.message },
+          task: this.executor.getTask(cleanId) });
+      } else throw error;
+    }
   }
 
   private handleError(err: unknown, res: ServerResponse): void {
     if (res.headersSent) return;
 
+    if (err instanceof URIError) {
+      this.sendJson(res, 400, { error: { code: 'MALFORMED_REQUEST_TARGET', message: 'Invalid HTTP request target' } });
+      return;
+    }
     if (err instanceof SecurityError) {
       this.sendJson(res, err.statusCode, {
         error: { code: err.code, message: err.message },
@@ -310,13 +335,14 @@ export class EngineServer {
     this.sendJson(res, 500, {
       error: {
         code: 'INTERNAL_SERVER_ERROR',
-        message: (err as Error).message ?? 'An internal engine error occurred',
+        message: 'An internal engine error occurred',
       },
     });
   }
 
   private sendJson(res: ServerResponse, statusCode: number, data: unknown): void {
     if (res.headersSent) return;
+    res.setHeader('Content-Type', 'application/json');
     res.statusCode = statusCode;
     res.end(JSON.stringify(data, null, 2));
   }

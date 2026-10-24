@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as writer from '../safe-write.js';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   mkdtempSync,
   rmSync,
@@ -48,7 +49,8 @@ describe('Summon Fixer Phase 5A — Engine Security Remediation Regression Suite
   });
 
   afterEach(async () => {
-    await engine.close();
+    vi.restoreAllMocks();
+    await engine?.close();
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -707,7 +709,7 @@ describe('Summon Fixer Phase 5A — Engine Security Remediation Regression Suite
   // Task 5: Safe Staged Replacement
   // =========================================================================
   describe('Task 5: Safe Staged Replacement Procedure', () => {
-    it('preserves the original file untouched if write/rename fails', async () => {
+    it('refuses unsafe application without touching the original or creating staging files', async () => {
       fakeRunner.queueOutput({
         summary: 'Change button color',
         edits: [
@@ -773,7 +775,8 @@ describe('Summon Fixer Phase 5A — Engine Security Remediation Regression Suite
           }),
         });
 
-        expect(applyRes.status).toBe(500);
+        expect(applyRes.status).toBe(503);
+        expect((await applyRes.json()).error.code).toBe('SAFE_WRITE_UNAVAILABLE');
       } finally {
         // Restore permissions
         chmodSync(join(tempDir, 'src'), 0o755);
@@ -918,7 +921,11 @@ describe('Summon Fixer Phase 5A — Engine Security Remediation Regression Suite
   // =========================================================================
   // Task 9: Verification Integrity
   // =========================================================================
-  describe('Task 9: Verification Integrity', () => {
+  describe('Task 9: Verification Integrity with simulated fixture-only storage', () => {
+    beforeEach(() => {
+      // Tests the state machine after a write, not production filesystem safety.
+      vi.spyOn(writer, 'replaceFileSafely').mockImplementation((path, content) => writeFileSync(path, content));
+    });
     it('fails verification when applied code introduces a syntax error', async () => {
       fakeRunner.queueOutput({
         summary: 'Syntax error injection',
@@ -981,6 +988,9 @@ describe('Summon Fixer Phase 5A — Engine Security Remediation Regression Suite
       expect(applyRes.status).toBe(400);
       const applyData = await applyRes.json();
       expect(applyData.error.message).toContain('Verification checks failed');
+      expect(applyData.task.application).toEqual({ status: 'applied', appliedEditsCount: 1 });
+      expect(applyData.task.error.code).toBe('VERIFICATION_FAILED');
+      expect(applyData.task.verification.status).toBe('failed');
     });
 
     it('reports status: skipped when modifying a non-analyzable file format without verification command', async () => {

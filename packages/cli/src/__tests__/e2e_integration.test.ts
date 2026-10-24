@@ -159,7 +159,7 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
       expect(mapping.line).toBeGreaterThanOrEqual(264);
     });
 
-    it('executes full pipeline: task creation -> fake proposal -> approval -> disk update -> HMR check', async () => {
+    it('creates a fake proposal, requires approval and refuses unsupported automatic application', async () => {
       const client = new SummonApiClient({
         apiPrefix: `${bridgeUrl}/__summon/v1`,
       });
@@ -224,42 +224,15 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
       expect(diskContentBeforeApproval).not.toContain('[FAKE RUNNER: purple]');
 
       // 3. Submit explicit approval tied to proposal digest and task version
-      const approvalResponse = await client.submitApproval(taskId, {
-        taskId,
-        taskVersion: task.version,
-        proposalDigest: task.proposal!.proposalDigest!,
-        decision: 'approved',
-        respondedAt: createTimestamp(),
-      });
-
-      expect(approvalResponse).toBeDefined();
-
-      // 4. Poll until completed
+      await expect(client.submitApproval(taskId, {
+        taskId, taskVersion: task.version, proposalDigest: task.proposal!.proposalDigest!,
+        decision: 'approved', respondedAt: createTimestamp(),
+      })).rejects.toThrow('Automatic application is disabled');
       task = await client.getTask(taskId);
-      const applyStartTime = Date.now();
-      while (
-        task.status !== 'completed' &&
-        task.status !== 'failed' &&
-        Date.now() - applyStartTime < 10_000
-      ) {
-        await new Promise((r) => setTimeout(r, 200));
-        task = await client.getTask(taskId);
-      }
-
-      expect(task.status).toBe('completed');
-      expect(task.completion?.type).toBe('edits_applied');
-      expect(task.completion?.appliedEditsCount).toBe(1);
-      expect(task.verification?.status).toBe('passed');
-
-      // 5. Invariant Check: Verify file on disk IS NOW MODIFIED with purple background
-      const diskContentAfterApproval = readFileSync(
-        join(tempDir, 'apps/demo/src/App.tsx'),
-        'utf-8'
-      );
-      expect(diskContentAfterApproval).not.toBe(originalAppContent);
-      expect(diskContentAfterApproval).toContain('[FAKE RUNNER: purple]');
-      expect(diskContentAfterApproval).toContain('#9333ea');
-      expect(diskContentAfterApproval).toContain('id="checkout-now-button"');
+      expect(task.status).toBe('failed');
+      expect(task.error?.code).toBe('SAFE_WRITE_UNAVAILABLE');
+      expect(task.application).toEqual({ status: 'not_applied', appliedEditsCount: 0 });
+      expect(readFileSync(join(tempDir, 'apps/demo/src/App.tsx'), 'utf8')).toBe(originalAppContent);
 
       // 6. Simulate Vite HMR file change invalidation
       registry.invalidateFile(join(tempDir, 'apps/demo/src/App.tsx'));
@@ -402,7 +375,7 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
   // =========================================================================
   // Task E: Test Real Codex on Disposable Project Copy
   // =========================================================================
-  describe('Task E: End-to-End Real Codex Execution', () => {
+  describe.skipIf(process.env.SUMMON_RUN_REAL_CODEX_TESTS !== '1')('Task E: End-to-End Real Codex Execution', () => {
     const codexBin = resolveCodexBinaryPath();
     let realTempDir: string;
     let realEngine: EngineInstance;
@@ -414,8 +387,7 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
 
     beforeAll(async () => {
       if (!codexBin) {
-        console.warn('Real Codex binary not found; skipping Task E');
-        return;
+        throw new Error('Real Codex tests were explicitly enabled but no binary was found');
       }
 
       // 1. Create fresh disposable project copy
@@ -519,7 +491,7 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
       }
     });
 
-    it('executes real Codex, verifies proposal, requires approval, applies change, and updates styling', async () => {
+    it('executes opt-in real Codex planning and fails closed on unsupported application', async () => {
       if (!codexBin) {
         return;
       }
@@ -587,57 +559,14 @@ describe('Summon Fixer Phase 3 — End-to-End Vertical Slice Integration', () =>
       expect(diskContentBeforeApproval).toBe(realOriginalAppContent);
 
       // 3. Submit explicit user approval
-      const approvalRes = await client.submitApproval(taskId, {
-        taskId,
-        taskVersion: task.version,
-        proposalDigest: task.proposal!.proposalDigest!,
-        decision: 'approved',
-        respondedAt: createTimestamp(),
-      });
-      expect(approvalRes).toBeDefined();
-
-      // 4. Poll until completed
+      await expect(client.submitApproval(taskId, {
+        taskId, taskVersion: task.version, proposalDigest: task.proposal!.proposalDigest!,
+        decision: 'approved', respondedAt: createTimestamp(),
+      })).rejects.toThrow('Automatic application is disabled');
       task = await client.getTask(taskId);
-      const applyStartTime = Date.now();
-      while (
-        task.status !== 'completed' &&
-        task.status !== 'failed' &&
-        Date.now() - applyStartTime < 15_000
-      ) {
-        await new Promise((r) => setTimeout(r, 500));
-        task = await client.getTask(taskId);
-      }
-
-      expect(task.status).toBe('completed');
-      expect(task.completion?.type).toBe('edits_applied');
-      expect(task.completion?.appliedEditsCount).toBe(1);
-
-      // 5. Verify approved change was applied to disk
-      const diskContentAfterApproval = readFileSync(
-        join(realTempDir, 'apps/demo/src/App.tsx'),
-        'utf-8'
-      );
-      expect(diskContentAfterApproval).not.toBe(realOriginalAppContent);
-      expect(diskContentAfterApproval.toLowerCase()).toMatch(/purple|#9333ea|#800080|#a855f7/i);
-      expect(diskContentAfterApproval).toContain('id="checkout-now-button"');
-
-      // 6. Verify browser styling update:
-      // Instrument the modified file and verify that the checkout button now includes the new purple style
-      const postRegistry = new SourceRegistry();
-      const reInstrumented = instrumentJsx(
-        diskContentAfterApproval,
-        join(realTempDir, 'apps/demo/src/App.tsx'),
-        postRegistry,
-        { root: join(realTempDir, 'apps/demo') }
-      );
-      expect(reInstrumented).not.toBeNull();
-      expect(reInstrumented?.code.toLowerCase()).toMatch(/purple|#9333ea|#800080|#a855f7/i);
-
-      // 7. Verify verification results reflect actual checks
-      expect(task.verification).toBeDefined();
-      expect(task.verification?.status).toBe('passed');
-      expect(task.verification?.checks.length).toBeGreaterThan(0);
-      expect(task.verification?.checks[0].status).toBe('passed');
+      expect(task.error?.code).toBe('SAFE_WRITE_UNAVAILABLE');
+      expect(task.application).toEqual({ status: 'not_applied', appliedEditsCount: 0 });
+      expect(readFileSync(join(realTempDir, 'apps/demo/src/App.tsx'), 'utf8')).toBe(realOriginalAppContent);
     }, 120_000);
   });
 });

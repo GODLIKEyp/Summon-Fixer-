@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { createHash } from 'node:crypto';
+import { sha256 } from './sha256.js';
 
 /**
  * Normalizes a workspace-relative file path.
@@ -228,7 +228,7 @@ export function computeProposalDigest(
     })),
   };
 
-  return createHash('sha256').update(JSON.stringify(canonicalPayload)).digest('hex');
+  return sha256(JSON.stringify(canonicalPayload));
 }
 
 /**

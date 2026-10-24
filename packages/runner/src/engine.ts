@@ -10,6 +10,8 @@ export interface StartEngineOptions {
   runner?: CodexRunnerInterface;
   useFakeRunner?: boolean;
   verificationCommand?: string;
+  verificationTimeoutMs?: number;
+  proposalTimeoutMs?: number;
 }
 
 export interface EngineInstance {
@@ -37,6 +39,8 @@ export async function startEngine(options: StartEngineOptions): Promise<EngineIn
     workspaceRoot: options.workspaceRoot,
     runner,
     verificationCommand: options.verificationCommand,
+    verificationTimeoutMs: options.verificationTimeoutMs,
+    proposalTimeoutMs: options.proposalTimeoutMs,
   });
 
   const { host, port, url } = await server.start();

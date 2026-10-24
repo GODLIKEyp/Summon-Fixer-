@@ -33,12 +33,14 @@ describe('Summon CLI Foundation', () => {
   describe('runDev', () => {
     it('starts engine and returns valid session in engine-only mode', async () => {
       writeFileSync(join(tempDir, 'package.json'), JSON.stringify({ name: 'test' }));
+      const signalsBefore = { int: process.listenerCount('SIGINT'), term: process.listenerCount('SIGTERM') };
 
       const session = await runDev({
         cwd: tempDir,
         engineOnly: true,
         useFakeRunner: true,
         port: 0,
+        proposalTimeoutMs: 1234,
       });
 
       expect(session.engine).toBeDefined();
@@ -49,6 +51,26 @@ describe('Summon CLI Foundation', () => {
       expect(healthRes.status).toBe(200);
 
       await session.stop();
+      await session.stop();
+      expect(process.listenerCount('SIGINT')).toBe(signalsBefore.int);
+      expect(process.listenerCount('SIGTERM')).toBe(signalsBefore.term);
+    });
+
+    it('rejects an occupied port without installing signal handlers', async () => {
+      writeFileSync(join(tempDir, 'package.json'), '{}');
+      const first = await runDev({ cwd: tempDir, engineOnly: true, useFakeRunner: true, port: 0 });
+      const count = process.listenerCount('SIGTERM');
+      try {
+        await expect(runDev({ cwd: tempDir, engineOnly: true, useFakeRunner: true, port: first.engine.port }))
+          .rejects.toMatchObject({ code: 'EADDRINUSE' });
+        expect(process.listenerCount('SIGTERM')).toBe(count);
+      } finally { await first.stop(); }
+    });
+
+    it('rejects unbounded proposal deadlines before opening a server', async () => {
+      writeFileSync(join(tempDir, 'package.json'), '{}');
+      await expect(runDev({ cwd: tempDir, engineOnly: true, useFakeRunner: true, port: 0,
+        proposalTimeoutMs: Infinity })).rejects.toThrow('Timeout must be an integer');
     });
   });
 });

@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { startEngine, type EngineInstance } from '@summon-fixer/runner';
+import { startEngine, terminateProcessTree, type EngineInstance } from '@summon-fixer/runner';
 import { resolveWorkspaceRoot } from './workspace.js';
 
 export interface DevCommandOptions {
@@ -11,6 +11,7 @@ export interface DevCommandOptions {
   command?: string;
   engineOnly?: boolean;
   verificationCommand?: string;
+  proposalTimeoutMs?: number;
 }
 
 export interface DevSession {
@@ -35,6 +36,7 @@ export async function runDev(options: DevCommandOptions = {}): Promise<DevSessio
     port: options.port ?? 7890,
     useFakeRunner: options.useFakeRunner,
     verificationCommand: options.verificationCommand,
+    proposalTimeoutMs: options.proposalTimeoutMs,
   });
 
   console.log(`[summon] Local engine running at ${engine.url}`);
@@ -42,32 +44,27 @@ export async function runDev(options: DevCommandOptions = {}): Promise<DevSessio
   console.log(`[summon] Mode: ${engine.server.executor ? 'active' : 'idle'}`);
 
   let child: ChildProcess | undefined;
-  let isStopping = false;
+  let stopping: Promise<void> | undefined;
 
-  const stopSession = async () => {
-    if (isStopping) return;
-    isStopping = true;
-
-    if (child && !child.killed) {
-      try {
-        child.kill('SIGTERM');
-      } catch {
-        // ignore kill error
-      }
-    }
-
-    try {
-      await engine.close();
-      console.log('[summon] Engine stopped gracefully.');
-    } catch {
-      // ignore close error
-    }
+  const stopSession = (): Promise<void> => {
+    if (stopping) return stopping;
+    stopping = (async () => {
+      process.removeListener('SIGINT', onSignal);
+      process.removeListener('SIGTERM', onSignal);
+      const results = await Promise.allSettled([
+        child ? terminateProcessTree(child) : Promise.resolve(), engine.close(),
+      ]);
+      const failure = results.find((result) => result.status === 'rejected');
+      if (failure?.status === 'rejected') throw failure.reason;
+      console.log('[summon] Engine and managed processes stopped.');
+    })();
+    return stopping;
   };
 
   // Register process termination handlers
   const onSignal = () => {
-    stopSession().then(() => {
-      process.exit(0);
+    void stopSession().then(() => { process.exitCode = 0; }, () => {
+      console.error('[summon] Process cleanup failed.'); process.exitCode = 1;
     });
   };
 
@@ -98,7 +95,7 @@ export async function runDev(options: DevCommandOptions = {}): Promise<DevSessio
   }
 
   if (cmdToRun) {
-    console.log(`[summon] Starting dev process: '${cmdToRun}'...`);
+    console.log('[summon] Starting dev process...');
     const env = {
       ...process.env,
       SUMMON_WORKSPACE_ROOT: workspaceRoot,
@@ -106,24 +103,25 @@ export async function runDev(options: DevCommandOptions = {}): Promise<DevSessio
       SUMMON_ENGINE_TOKEN: engine.token,
     };
 
-    child = spawn(cmdToRun, {
-      cwd: workspaceRoot,
-      env,
-      shell: true,
-      stdio: 'inherit',
-    });
+    try {
+      child = spawn(cmdToRun, {
+        cwd: workspaceRoot,
+        env,
+        shell: true,
+        detached: process.platform !== 'win32',
+        stdio: 'inherit',
+      });
+    } catch (error) { await stopSession(); throw error; }
 
     child.on('exit', (code) => {
-      stopSession().then(() => {
-        if (code !== 0 && code !== null) {
-          process.exit(code);
-        }
-      });
+      void stopSession().then(() => {
+        if (code !== 0 && code !== null) process.exitCode = code;
+      }, () => { process.exitCode = 1; });
     });
 
-    child.on('error', (err) => {
-      console.error(`[summon] Child process error: ${err.message}`);
-      stopSession();
+    child.on('error', () => {
+      console.error('[summon] Child process failed to start.');
+      void stopSession().catch(() => { process.exitCode = 1; });
     });
   } else {
     console.log('[summon] No dev command detected in package.json. Running engine in standalone mode.');

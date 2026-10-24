@@ -1,14 +1,13 @@
-import { spawn } from 'node:child_process';
-import { existsSync, readdirSync, writeFileSync, unlinkSync } from 'node:fs';
+import { existsSync, readdirSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
-import { randomBytes } from 'node:crypto';
+import { DEFAULT_PROPOSAL_TIMEOUT_MS, validateTimeoutMs } from '../deadline.js';
+import { runManagedProcess, ManagedProcessError } from '../process.js';
 import { z } from 'zod';
 import type {
   CodexRunnerInterface,
   CodexProposalInput,
   CodexProposalOutput,
-  ProposedEdit,
 } from './types.js';
 import type { FileChangeType } from '@summon-fixer/contracts';
 
@@ -111,14 +110,15 @@ export class RealCodexRunner implements CodexRunnerInterface {
   }
 
   async propose(input: CodexProposalInput): Promise<CodexProposalOutput> {
-    const { prompt, workspaceRoot, targetFiles, sourceHints, timeoutMs = 60_000 } = input;
+    const { prompt, workspaceRoot, targetFiles, sourceHints, timeoutMs = DEFAULT_PROPOSAL_TIMEOUT_MS } = input;
 
-    // 1. Write strict schema to temporary file
-    const schemaFile = resolve(
-      tmpdir(),
-      `summon-schema-${randomBytes(8).toString('hex')}.json`
-    );
-    writeFileSync(schemaFile, JSON.stringify(CODEX_OUTPUT_SCHEMA, null, 2), 'utf-8');
+    validateTimeoutMs(timeoutMs);
+    const startedAt = performance.now();
+    const report = (stage: import('./types.js').CodexDiagnostic['stage']) => {
+      try { input.onDiagnostic?.({ stage, elapsedMs: Math.round(performance.now() - startedAt), timeoutMs }); }
+      catch { /* A diagnostic subscriber cannot change proposal semantics. */ }
+    };
+    report('starting');
 
     // 2. Compose instruction prompt incorporating source hints
     let fullPrompt = `Task: ${prompt}\n\n`;
@@ -160,199 +160,81 @@ export class RealCodexRunner implements CodexRunnerInterface {
       PATH: `${codexBinDir}:${process.env.PATH ?? ''}`,
     };
 
-    const args = [
-      'exec',
-      '-s',
-      'read-only',
-      '--ephemeral',
-      '--json',
-      '--output-schema',
-      schemaFile,
-      fullPrompt,
-    ];
-
-    return new Promise<CodexProposalOutput>((resolvePromise, rejectPromise) => {
-      const child = spawn(this.binaryPath, args, {
-        cwd: workspaceRoot,
-        env,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-
-      let stdoutBuffer = '';
-      let stderrBuffer = '';
-      let totalOutputBytes = 0;
-      let killedDueToOversized = false;
-      const rawEvents: unknown[] = [];
-      let parsedOutput: CodexProposalOutput | null = null;
-      let lastSchemaError: z.ZodError | null = null;
-
-      const timer = setTimeout(() => {
-        child.kill('SIGTERM');
-        cleanup();
-        rejectPromise(
-          new CodexExecutionError(`Codex execution timed out after ${timeoutMs}ms`)
-        );
-      }, timeoutMs);
-
-      const cleanup = () => {
-        clearTimeout(timer);
-        try {
-          if (existsSync(schemaFile)) {
-            unlinkSync(schemaFile);
-          }
-        } catch {
-          // ignore cleanup errors
-        }
-      };
-
-      const handleChunk = (chunk: Buffer, isStderr: boolean) => {
-        if (killedDueToOversized) return;
-        totalOutputBytes += chunk.length;
-        if (totalOutputBytes > MAX_CODEX_OUTPUT_BYTES) {
-          killedDueToOversized = true;
-          child.kill('SIGKILL');
-          cleanup();
-          rejectPromise(
-            new CodexExecutionError(
-              `Codex execution exceeded maximum output limit of ${MAX_CODEX_OUTPUT_BYTES} bytes`,
-              { code: 'OUTPUT_TOO_LARGE' }
-            )
-          );
-          return;
-        }
-
-        if (isStderr) {
-          stderrBuffer += chunk.toString('utf-8');
-          return;
-        }
-
-        const text = chunk.toString('utf-8');
-        stdoutBuffer += text;
-
-        const lines = stdoutBuffer.split('\n');
-        stdoutBuffer = lines.pop() ?? '';
-
+    // The prompt goes over stdin, not the process command line. The schema is
+    // non-secret, but still gets a private directory and exclusive creation.
+    const schemaDir = mkdtempSync(resolve(tmpdir(), 'summon-schema-'));
+    const schemaFile = resolve(schemaDir, 'output.json');
+    try {
+      writeFileSync(schemaFile, JSON.stringify(CODEX_OUTPUT_SCHEMA), { flag: 'wx', mode: 0o600 });
+      let observed = '';
+      let reportedEvent = false;
+      let reportedProposal = false;
+      const observe = (text: string) => {
+        observed += text;
+        const lines = observed.split('\n');
+        observed = lines.pop() ?? '';
         for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
           try {
-            const event = JSON.parse(trimmed);
-            rawEvents.push(event);
-
-            // Check for completed agent message containing structured response
-            if (
-              event.type === 'item.completed' &&
-              event.item?.type === 'agent_message' &&
-              typeof event.item?.text === 'string'
-            ) {
-              try {
-                const structured = JSON.parse(event.item.text);
-                const validated = CodexProposalOutputSchema.safeParse(structured);
-                if (validated.success) {
-                  parsedOutput = {
-                    summary: validated.data.summary,
-                    edits: validated.data.edits.map((e) => ({
-                      path: e.path,
-                      changeType: e.changeType as FileChangeType,
-                      oldContent: e.oldContent ?? null,
-                      newContent: e.newContent ?? null,
-                      description: e.description,
-                    })),
-                    rawEvents,
-                  };
-                } else {
-                  lastSchemaError = validated.error;
-                }
-              } catch {
-                // Not JSON text yet
-              }
+            const event = JSON.parse(line);
+            if (!reportedEvent) { reportedEvent = true; report('first_event'); }
+            if (!reportedProposal && event.type === 'item.completed' && event.item?.type === 'agent_message'
+              && CodexProposalOutputSchema.safeParse(JSON.parse(event.item.text)).success) {
+              reportedProposal = true; report('proposal_received');
             }
-          } catch {
-            // Non-JSON line from stdout
-          }
+          } catch { /* Authoritative validation runs after process completion. */ }
         }
       };
-
-      child.stdout.on('data', (chunk: Buffer) => handleChunk(chunk, false));
-      child.stderr.on('data', (chunk: Buffer) => handleChunk(chunk, true));
-
-      child.on('error', (err) => {
-        cleanup();
-        rejectPromise(
-          new CodexExecutionError(`Failed to spawn Codex CLI: ${err.message}`, err)
-        );
+      const result = await runManagedProcess({
+        command: this.binaryPath,
+        args: ['exec', '-s', 'read-only', '--ephemeral', '--json', '--output-schema', schemaFile, '-'],
+        cwd: workspaceRoot, env, input: fullPrompt, timeoutMs,
+        signal: input.signal, maxOutputBytes: MAX_CODEX_OUTPUT_BYTES,
+        onStage: report, onStdout: observe,
       });
-
-      child.on('close', (code) => {
-        cleanup();
-        if (killedDueToOversized) return;
-
-        // Nonzero process exit MUST fail, even if partial output was parsed earlier
-        if (code !== 0) {
-          rejectPromise(
-            new CodexExecutionError(
-              `Codex process exited with code ${code}. Stderr: ${stderrBuffer.trim()}`,
-              { code, stderr: stderrBuffer }
-            )
-          );
-          return;
+      if (result.exitCode !== 0) {
+        throw new CodexExecutionError(`Codex process exited with code ${result.exitCode}`, { code: 'NONZERO_EXIT' });
+      }
+      let output: CodexProposalOutput | undefined;
+      let invalidFinal = false;
+      for (const line of result.stdout.split('\n')) {
+        if (!line.trim()) continue;
+        let event: any;
+        try { event = JSON.parse(line); }
+        catch { throw new CodexExecutionError('Codex returned malformed event output', { code: 'MALFORMED_OUTPUT' }); }
+        if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
+          throw new CodexExecutionError('Codex returned malformed event output', { code: 'MALFORMED_OUTPUT' });
         }
-
-        if (stdoutBuffer.trim()) {
-          try {
-            const event = JSON.parse(stdoutBuffer.trim());
-            rawEvents.push(event);
-            if (
-              event.type === 'item.completed' &&
-              event.item?.type === 'agent_message' &&
-              typeof event.item?.text === 'string'
-            ) {
-              const structured = JSON.parse(event.item.text);
-              const validated = CodexProposalOutputSchema.safeParse(structured);
-              if (validated.success) {
-                parsedOutput = {
-                  summary: validated.data.summary,
-                  edits: validated.data.edits.map((e) => ({
-                    path: e.path,
-                    changeType: e.changeType as FileChangeType,
-                    oldContent: e.oldContent ?? null,
-                    newContent: e.newContent ?? null,
-                    description: e.description,
-                  })),
-                  rawEvents,
-                };
-              } else {
-                lastSchemaError = validated.error;
-              }
-            }
-          } catch {
-            // ignore trailing non-JSON
+        if (event.type === 'turn.failed' || event.type === 'error' || event.type === 'turn.cancelled') {
+          throw new CodexExecutionError('Codex reported a failed or cancelled turn', { code: 'TURN_FAILED' });
+        }
+        if (event.type === 'item.completed' && event.item?.type === 'agent_message') {
+          // Commentary before the first structured answer is not a proposal.
+          // Once an answer exists, later malformed output permanently fails it.
+          let structured: unknown;
+          try { structured = JSON.parse(event.item.text); } catch { structured = null; }
+          const parsed = CodexProposalOutputSchema.safeParse(structured);
+          if (!parsed.success) {
+            if (output || event.item.phase !== 'commentary') invalidFinal = true;
+          } else {
+            output = {
+              summary: parsed.data.summary,
+              edits: parsed.data.edits.map((edit) => ({ ...edit, changeType: edit.changeType as FileChangeType,
+                oldContent: edit.oldContent ?? null, newContent: edit.newContent ?? null })),
+            };
           }
         }
-
-        if (parsedOutput) {
-          resolvePromise(parsedOutput);
-          return;
-        }
-
-        if (lastSchemaError) {
-          rejectPromise(
-            new CodexExecutionError(
-              `Codex output failed schema validation: ${lastSchemaError.message}`,
-              { code: 'MALFORMED_SCHEMA', details: lastSchemaError.format() }
-            )
-          );
-          return;
-        }
-
-        // Process exited cleanly but no structured output matched
-        rejectPromise(
-          new CodexExecutionError(
-            `Codex completed without returning valid proposal output. Stderr: ${stderrBuffer.trim()}`,
-            { code: 'MISSING_OUTPUT', stdout: stdoutBuffer, stderr: stderrBuffer, rawEvents }
-          )
-        );
-      });
-    });
+      }
+      if (invalidFinal) throw new CodexExecutionError('Codex output failed schema validation', { code: 'MALFORMED_SCHEMA' });
+      if (!output) throw new CodexExecutionError('Codex completed without returning valid proposal output', { code: 'MISSING_OUTPUT' });
+      report('completed');
+      return output;
+    } catch (error) {
+      report('failed');
+      if (error instanceof ManagedProcessError) throw new CodexExecutionError(error.message, { code: error.code });
+      if (error instanceof CodexExecutionError) throw error;
+      throw new CodexExecutionError('Codex proposal setup or cleanup failed', { code: 'SETUP_FAILED' });
+    } finally {
+      rmSync(schemaDir, { recursive: true, force: true });
+    }
   }
 }

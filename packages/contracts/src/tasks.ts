@@ -237,6 +237,11 @@ export type TaskLogEntry = z.infer<typeof TaskLogEntrySchema>;
  * Owned by the engine.
  */
 export const TaskStateSchema = z.object({
+  /** Disk outcome is independent of task/verification success. Optional for old clients. */
+  application: z.object({
+    status: z.enum(['not_applied', 'applied']),
+    appliedEditsCount: z.number().int().nonnegative(),
+  }).optional(),
   /**
    * Authoritative server-assigned task ID.
    */

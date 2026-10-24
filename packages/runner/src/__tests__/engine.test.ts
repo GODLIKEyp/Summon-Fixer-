@@ -29,7 +29,7 @@ describe('Local Engine HTTP Service & Task Lifecycle', () => {
   });
 
   afterEach(async () => {
-    await engine.close();
+    await engine?.close();
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -152,7 +152,7 @@ describe('Local Engine HTTP Service & Task Lifecycle', () => {
     const digestData = await staleDigestRes.json();
     expect(digestData.error.code).toBe('DIGEST_MISMATCH');
 
-    // Test Successful Approval and Apply
+    // Valid approval must still fail closed without a safe replacement backend.
     const applyRes = await fetch(`${engine.url}/v1/tasks/${taskId}/apply`, {
       method: 'POST',
       headers: {
@@ -170,15 +170,14 @@ describe('Local Engine HTTP Service & Task Lifecycle', () => {
       }),
     });
 
-    expect(applyRes.status).toBe(200);
+    expect(applyRes.status).toBe(503);
     const applyData = await applyRes.json();
-    expect(applyData.task.status).toBe('completed');
-    expect(applyData.task.completion?.appliedEditsCount).toBe(1);
-    expect(applyData.task.verification?.status).toBe('passed');
+    expect(applyData.error.code).toBe('SAFE_WRITE_UNAVAILABLE');
+    expect(applyData.task.application).toEqual({ status: 'not_applied', appliedEditsCount: 0 });
 
-    // Verify disk mutation
+    // Verify unchanged disk
     const diskContent = readFileSync(join(tempDir, 'src/Button.tsx'), 'utf-8');
-    expect(diskContent).toBe(`export const BUTTON_COLOR = 'red';\n`);
+    expect(diskContent).toBe(`export const BUTTON_COLOR = 'blue';\n`);
   });
 
   it('rejects approval if base content precondition is violated on disk', async () => {
@@ -259,7 +258,7 @@ describe('Local Engine HTTP Service & Task Lifecycle', () => {
     });
     const finalTask = (await getRes.json()).task;
     expect(finalTask.status).toBe('failed');
-    expect(finalTask.error?.code).toBe('APPLY_FAILED');
+    expect(finalTask.error?.code).toBe('PRECONDITION_FAILED');
   });
 
   it('handles user rejection and transitions task to cancelled', async () => {

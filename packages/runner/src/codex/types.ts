@@ -9,12 +9,20 @@ export interface ProposedEdit {
   description?: string;
 }
 
+export interface CodexDiagnostic {
+  stage: 'starting' | 'spawned' | 'first_output' | 'first_event' | 'proposal_received' | 'exited' | 'completed' | 'failed';
+  elapsedMs: number;
+  timeoutMs: number;
+}
+
 export interface CodexProposalInput {
   prompt: string;
   workspaceRoot: string;
   targetFiles?: string[];
   sourceHints?: SourceHint[];
   timeoutMs?: number;
+  signal?: AbortSignal;
+  onDiagnostic?: (diagnostic: CodexDiagnostic) => void;
 }
 
 export interface CodexProposalOutput {
