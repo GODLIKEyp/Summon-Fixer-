@@ -101,6 +101,7 @@ export async function runDev(options: DevCommandOptions = {}): Promise<DevSessio
     console.log(`[summon] Starting dev process: '${cmdToRun}'...`);
     const env = {
       ...process.env,
+      SUMMON_WORKSPACE_ROOT: workspaceRoot,
       SUMMON_ENGINE_URL: engine.url,
       SUMMON_ENGINE_TOKEN: engine.token,
     };

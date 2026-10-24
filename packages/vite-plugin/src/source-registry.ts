@@ -17,7 +17,8 @@ export class SourceRegistry {
     line: number,
     column: number,
     elementTag?: string,
-    fileContent?: string
+    fileContent?: string,
+    absolutePath?: string
   ): string {
     // Generate file revision if content is supplied
     let revision = this.fileRevisions.get(filePath);
@@ -37,6 +38,7 @@ export class SourceRegistry {
       column,
       revision,
       elementTag,
+      absolutePath,
     };
 
     this.mappings.set(sourceId, mapping);
@@ -56,7 +58,12 @@ export class SourceRegistry {
   public invalidateFile(filePath: string): void {
     this.fileRevisions.delete(filePath);
     for (const [key, mapping] of this.mappings.entries()) {
-      if (mapping.file === filePath) {
+      if (
+        mapping.file === filePath ||
+        mapping.absolutePath === filePath ||
+        (mapping.absolutePath && mapping.absolutePath.endsWith(filePath)) ||
+        (filePath && filePath.endsWith(mapping.file))
+      ) {
         this.mappings.delete(key);
       }
     }

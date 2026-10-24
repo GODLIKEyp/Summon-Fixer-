@@ -174,7 +174,7 @@ export function instrumentJsx(
 
           if (isValidJsx) {
             const { line: tagLine, column: tagCol } = getLineAndCol(i);
-            const sourceId = registry.register(relativeFile, tagLine, tagCol, tagName, code);
+            const sourceId = registry.register(relativeFile, tagLine, tagCol, tagName, code, id);
 
             // Append data attributes immediately after the tag name
             const attrInjection = ` data-summon-id="${sourceId}" data-summon-source="${relativeFile}:${tagLine}:${tagCol}"`;

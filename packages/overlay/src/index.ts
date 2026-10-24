@@ -18,10 +18,15 @@ declare global {
   }
 }
 
+const BaseElement =
+  typeof HTMLElement !== 'undefined'
+    ? HTMLElement
+    : (class {} as unknown as typeof HTMLElement);
+
 /**
  * Custom Web Component hosting the isolated Summon Fixer visual companion.
  */
-export class SummonOverlay extends HTMLElement {
+export class SummonOverlay extends BaseElement {
   private shadow: ShadowRoot;
   private pointModeController!: PointModeController;
   private promptPanelController!: PromptPanelController;

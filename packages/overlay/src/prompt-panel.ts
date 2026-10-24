@@ -434,8 +434,8 @@ export class PromptPanelController {
                   <button type="button" class="summon-mode-pill ${this.state.permissionMode === 'plan' ? 'selected' : ''}" data-mode="plan">
                     Plan Only
                   </button>
-                  <button type="button" class="summon-mode-pill ${this.state.permissionMode === 'auto' ? 'selected' : ''}" data-mode="auto">
-                    Auto Apply
+                  <button type="button" class="summon-mode-pill disabled" data-mode="auto" disabled title="Auto Apply is disabled until runtime auto permissions are implemented" style="opacity: 0.5; cursor: not-allowed;">
+                    Auto Apply (Disabled)
                   </button>
                 </div>
                 <span class="summon-mode-hint">
@@ -444,7 +444,7 @@ export class PromptPanelController {
                       ? 'Requires explicit review before applying any changes to your files.'
                       : this.state.permissionMode === 'plan'
                       ? 'Inspects workspace and generates diff plan without modifying disk.'
-                      : 'Applies verified changes automatically within policy limits.'
+                      : 'Auto Apply is disabled until runtime auto permissions are implemented.'
                   }
                 </span>
               </div>
@@ -474,7 +474,7 @@ export class PromptPanelController {
             `
                 : isRunning
                 ? `
-              <button class="summon-btn summon-btn-secondary" id="summon-btn-cancel-task">Cancel Task</button>
+              <button class="summon-btn summon-btn-secondary" id="summon-btn-close-bottom">Dismiss</button>
               <button class="summon-btn summon-btn-primary" disabled>
                 <span class="summon-spinner"></span>
                 <span>Working...</span>
@@ -542,7 +542,7 @@ export class PromptPanelController {
     modePills.forEach((pill) => {
       pill.addEventListener('click', () => {
         const mode = pill.getAttribute('data-mode') as PermissionMode;
-        if (mode) {
+        if (mode && mode !== 'auto') {
           this.state.permissionMode = mode;
           this.render();
         }

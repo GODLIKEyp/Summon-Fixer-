@@ -5,6 +5,12 @@
     "composite": false,
     "noEmit": true
   },
+  "references": [
+    { "path": "../contracts" },
+    { "path": "../runner" },
+    { "path": "../overlay" },
+    { "path": "../vite-plugin" }
+  ],
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
 }

@@ -15,8 +15,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "clean": "rm -rf dist *.tsbuildinfo"
   },

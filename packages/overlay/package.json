@@ -9,14 +9,18 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./client-api": {
+      "types": "./dist/client-api.d.ts",
+      "import": "./dist/client-api.js"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "clean": "rm -rf dist *.tsbuildinfo"
   },

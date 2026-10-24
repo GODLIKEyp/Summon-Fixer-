@@ -20,6 +20,12 @@ export interface SummonFixerPluginOptions {
   apiPrefix?: string;
 
   /**
+   * Authoritative project workspace root.
+   * Defaults to SUMMON_WORKSPACE_ROOT environment variable or project root.
+   */
+  workspaceRoot?: string;
+
+  /**
    * Whether to enable automatic JSX source instrumentation in dev mode.
    * Defaults to true.
    */
@@ -33,4 +39,5 @@ export interface VerifiedSourceMapping {
   column: number;
   revision?: string;
   elementTag?: string;
+  absolutePath?: string;
 }

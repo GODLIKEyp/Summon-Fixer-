@@ -18,7 +18,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -b",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "clean": "rm -rf dist *.tsbuildinfo"
@@ -28,6 +28,8 @@
     "@summon-fixer/runner": "*"
   },
   "devDependencies": {
+    "@summon-fixer/overlay": "*",
+    "@summon-fixer/vite-plugin": "*",
     "@types/node": "^24.13.0",
     "typescript": "^5.8.2",
     "vitest": "^5.0.5"

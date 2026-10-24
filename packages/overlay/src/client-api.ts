@@ -69,7 +69,12 @@ export class SummonApiClient {
       throw new Error(`Engine request failed: ${msg}`);
     }
 
-    return await res.json();
+    const data = await res.json();
+    const task = data.task || data.state || data;
+    return {
+      taskId: data.taskId || task.taskId,
+      state: data.state || data.task,
+    };
   }
 
   /**
@@ -94,7 +99,8 @@ export class SummonApiClient {
       throw new Error(`Failed to fetch task: ${msg}`);
     }
 
-    return await res.json();
+    const data = await res.json();
+    return data.task || data;
   }
 
   /**
@@ -123,7 +129,11 @@ export class SummonApiClient {
       throw new Error(`Approval submission failed: ${msg}`);
     }
 
-    return await res.json();
+    const data = await res.json();
+    return {
+      success: true,
+      state: data.state || data.task,
+    };
   }
 
   /**

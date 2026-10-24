@@ -75,6 +75,15 @@ export class TaskExecutor {
   async createTask(envelope: TaskEnvelope): Promise<TaskState> {
     const { request, sourceHints } = envelope;
 
+    // Reject auto mode until runtime auto permissions are implemented
+    if (request.requestedMode === 'auto') {
+      throw new TaskExecutionError(
+        "Auto Apply mode is not currently supported. Use 'manual' or 'plan' mode.",
+        400,
+        'AUTO_MODE_UNSUPPORTED'
+      );
+    }
+
     // 1. Idempotency handling
     if (request.idempotencyKey) {
       const existing = this.idempotencyRecords.get(request.idempotencyKey);
@@ -227,6 +236,16 @@ export class TaskExecutor {
       task.proposal = plan;
       task.edits = plan.edits;
 
+      // Plan-only mode is genuinely read-only and transitions directly to completed
+      if (task.effectiveMode === 'plan') {
+        this.completeTask(task, {
+          type: 'read_only',
+          summary: `[Plan Only] ${plan.summary}`,
+          appliedEditsCount: 0,
+        });
+        return;
+      }
+
       this.transitionStatus(
         task,
         'awaiting_approval',
@@ -254,6 +273,14 @@ export class TaskExecutor {
         `Task '${taskId}' is in status '${task.status}', not awaiting approval`,
         400,
         'INVALID_TASK_STATUS'
+      );
+    }
+
+    if (task.effectiveMode === 'plan') {
+      throw new TaskExecutionError(
+        "Cannot apply edits in 'plan' mode: plan mode is strictly read-only",
+        403,
+        'PLAN_MODE_READ_ONLY'
       );
     }
 
@@ -295,9 +322,41 @@ export class TaskExecutor {
         (task.proposal.preconditions ?? []).map((p) => [p.path, p.expectedHash])
       );
 
-      // 1. Verify base-content preconditions for ALL edits prior to making any mutations
-      for (const edit of task.proposal.edits) {
-        const absPath = resolve(task.workspaceRoot, edit.path);
+      // Determine edits to apply, filtered by approvedPaths if specified
+      const approvedPathsSet =
+        approval.approvedPaths && approval.approvedPaths.length > 0
+          ? new Set(
+              approval.approvedPaths.map((p) =>
+                validateWorkspaceContainment(task.workspaceRoot, p)
+              )
+            )
+          : null;
+
+      const editsToApply = task.proposal.edits.filter((edit) => {
+        if (!approvedPathsSet) return true;
+        return approvedPathsSet.has(edit.path);
+      });
+
+      if (editsToApply.length === 0) {
+        throw new TaskExecutionError(
+          'No approved file modifications match the proposed edits',
+          400,
+          'NO_MATCHING_EDITS'
+        );
+      }
+
+      // 1. Recheck workspace containment, symlinks, policy restrictions, and base-content preconditions for ALL edits prior to making any mutations
+      for (const edit of editsToApply) {
+        // Recheck workspace containment and symlinks
+        const normalizedPath = validateWorkspaceContainment(
+          task.workspaceRoot,
+          edit.path
+        );
+
+        // Recheck active permission policy restrictions (e.g. protected secret files)
+        validateEditPolicy(normalizedPath, task.effectivePolicy);
+
+        const absPath = resolve(task.workspaceRoot, normalizedPath);
 
         if (edit.changeType === 'update' || edit.changeType === 'delete') {
           if (!existsSync(absPath)) {
@@ -320,11 +379,19 @@ export class TaskExecutor {
               );
             }
           }
+        } else if (edit.changeType === 'create') {
+          if (existsSync(absPath)) {
+            throw new TaskExecutionError(
+              `Precondition failed: target file '${edit.path}' already exists on disk`,
+              412,
+              'PRECONDITION_FAILED'
+            );
+          }
         }
       }
 
-      // 2. Apply all edits to disk
-      for (const edit of task.proposal.edits) {
+      // 2. Apply all approved edits to disk
+      for (const edit of editsToApply) {
         const absPath = resolve(task.workspaceRoot, edit.path);
 
         if (edit.changeType === 'create') {

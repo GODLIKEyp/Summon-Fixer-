@@ -98,7 +98,7 @@ export function summonFixer(options: SummonFixerPluginOptions = {}): Plugin {
     configureServer(server: ViteDevServer) {
       if (isProduction) return;
 
-      const bridgeMiddleware = createBridgeMiddleware(options, registry);
+      const bridgeMiddleware = createBridgeMiddleware(options, registry, root);
       server.middlewares.use(bridgeMiddleware);
     },
 

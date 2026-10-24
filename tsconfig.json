@@ -3,7 +3,9 @@
   "files": [],
   "references": [
     { "path": "./packages/contracts" },
+    { "path": "./packages/overlay" },
     { "path": "./packages/runner" },
+    { "path": "./packages/vite-plugin" },
     { "path": "./packages/cli" }
   ]
 }
