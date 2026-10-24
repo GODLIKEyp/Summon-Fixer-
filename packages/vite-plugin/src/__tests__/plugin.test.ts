@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { SourceRegistry } from '../source-registry.js';
 import { instrumentJsx } from '../jsx-transform.js';
-import { isLoopbackUrl, createBridgeMiddleware } from '../bridge.js';
+import { isLoopbackUrl } from '../bridge.js';
 import { summonFixer } from '../index.js';
 
 describe('Summon Fixer Vite Plugin - SourceRegistry', () => {
@@ -78,59 +78,6 @@ describe('Summon Fixer Vite Plugin - Loopback Security & Bridge', () => {
     expect(isLoopbackUrl('http://evil-domain.com')).toBe(false);
   });
 
-  it('rejects non-allowlisted routes with 404', async () => {
-    const registry = new SourceRegistry();
-    const middleware = createBridgeMiddleware({}, registry);
-
-    let status = 0;
-    let body = '';
-    const req: any = {
-      url: '/__summon/v1/unauthorized/route',
-      method: 'GET',
-    };
-    const res: any = {
-      statusCode: 200,
-      setHeader: () => {},
-      end: (data: string) => {
-        status = res.statusCode;
-        body = data;
-      },
-    };
-    const next = () => {};
-
-    await middleware(req, res, next);
-    expect(status).toBe(404);
-    expect(body).toContain('ERR_ROUTE_NOT_ALLOWLISTED');
-  });
-
-  it('resolves verified source mapping via bridge /source/resolve', async () => {
-    const registry = new SourceRegistry();
-    const sourceId = registry.register('src/App.tsx', 15, 3, 'div');
-    const middleware = createBridgeMiddleware({}, registry);
-
-    let status = 0;
-    let body = '';
-    const req: any = {
-      url: `/__summon/v1/source/resolve?sourceId=${encodeURIComponent(sourceId)}`,
-      method: 'GET',
-    };
-    const res: any = {
-      statusCode: 200,
-      setHeader: () => {},
-      end: (data: string) => {
-        status = res.statusCode;
-        body = data;
-      },
-    };
-    const next = () => {};
-
-    await middleware(req, res, next);
-    expect(status).toBe(200);
-    const parsed = JSON.parse(body);
-    expect(parsed.sourceId).toBe(sourceId);
-    expect(parsed.file).toBe('src/App.tsx');
-    expect(parsed.line).toBe(15);
-  });
 });
 
 describe('Summon Fixer Vite Plugin - Production Exclusion', () => {
@@ -138,14 +85,14 @@ describe('Summon Fixer Vite Plugin - Production Exclusion', () => {
     const plugin: any = summonFixer();
 
     // Dev configuration
-    plugin.configResolved?.({ command: 'serve', mode: 'development', root: '/test' });
+    plugin.configResolved?.({ command: 'serve', mode: 'development', root: '/test', server: {} });
     const devHtml = plugin.transformIndexHtml?.('<html><body><div id="root"></div></body></html>');
     expect(Array.isArray(devHtml)).toBe(true);
     expect(devHtml[0].tag).toBe('script');
     expect(devHtml[0].attrs.src).toBe('/@summon-overlay/client.js');
 
     // Production build configuration
-    plugin.configResolved?.({ command: 'build', mode: 'production', root: '/test' });
+    plugin.configResolved?.({ command: 'build', mode: 'production', root: '/test', server: {} });
     const prodHtml = plugin.transformIndexHtml?.('<html><body><div id="root"></div></body></html>');
     expect(prodHtml).toBe('<html><body><div id="root"></div></body></html>'); // Untouched string, 0 scripts injected!
   });

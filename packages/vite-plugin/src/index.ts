@@ -32,6 +32,9 @@ export function summonFixer(options: SummonFixerPluginOptions = {}): Plugin {
     configResolved(config: ResolvedConfig) {
       isProduction = config.command === 'build' || config.mode === 'production';
       root = config.root;
+      // Vite 8 installs CORS before configureServer. A permissive CORS handler
+      // would expose session bootstrap responses and answer preflights first.
+      if (!isProduction) config.server.cors = false;
     },
 
     resolveId(id: string) {
@@ -98,7 +101,13 @@ export function summonFixer(options: SummonFixerPluginOptions = {}): Plugin {
     configureServer(server: ViteDevServer) {
       if (isProduction) return;
 
-      const bridgeMiddleware = createBridgeMiddleware(options, registry, root);
+      const bridgeMiddleware = createBridgeMiddleware(options, registry, root, () => {
+        const address = server.httpServer?.address();
+        if (!address || typeof address === 'string') return undefined;
+        const host = typeof server.config.server.host === 'string' ? server.config.server.host : 'localhost';
+        const urlHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+        return `${server.config.server.https ? 'https' : 'http'}://${urlHost}:${address.port}`;
+      });
       server.middlewares.use(bridgeMiddleware);
     },
 
