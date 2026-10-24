@@ -12,7 +12,7 @@
 
 </div>
 
-![Aura Studio storefront with the Summon Fixer launcher in the bottom-right corner](docs/images/aura-studio-live.png)
+![Aura Studio storefront with the Summon Fixer launcher in the bottom-right corner](Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/docs/images/aura-studio-live.png)
 
 <p align="center"><sub>Actual application screenshot: Aura Studio is our demo storefront; Summon Fixer is the development companion attached to it.</sub></p>
 
@@ -47,7 +47,7 @@ The current prototype targets **local React/Vite development**. Broader creator 
 Open the floating launcher or press **⌘⇧S** on macOS. Hover over an element and select it. Development-time instrumentation resolves the selection to its source location.
 
 <p align="center">
-  <img src="docs/images/element-source-mapping.png" width="656" alt="Checkout Now button highlighted with its App.tsx source file, line, and column" />
+  <img src="Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/docs/images/element-source-mapping.png" width="656" alt="Checkout Now button highlighted with its App.tsx source file, line, and column" />
 </p>
 
 <p align="center"><sub>Actual screenshot: the selected button maps to <code>App.tsx</code>. Line numbers vary by revision.</sub></p>
@@ -57,7 +57,7 @@ Open the floating launcher or press **⌘⇧S** on macOS. Hover over an element 
 The overlay keeps the selected target and source badge beside your instruction. Choose **Manual Approval** for a reviewable proposal or **Plan Only** for a read-only task.
 
 <p align="center">
-  <img src="docs/images/visual-edit-prompt.png" width="600" alt="Summon Fixer prompt panel with selected checkout button, source badge, instruction field, Manual Approval and Plan Only controls" />
+  <img src="Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/docs/images/visual-edit-prompt.png" width="600" alt="Summon Fixer prompt panel with selected checkout button, source badge, instruction field, Manual Approval and Plan Only controls" />
 </p>
 
 <p align="center"><sub>Actual screenshot: the instruction panel. Auto Apply is disabled.</sub></p>
@@ -184,7 +184,7 @@ The test command above excludes real-Codex integration tests. Build and unit-tes
 
 The storyboard below illustrates that complete journey. It is **generated concept artwork**, not a live demo capture. Its final applied-change frame shows a future capability.
 
-![Concept storyboard showing element selection, a natural-language request, a code proposal, and a future approved live update](docs/images/vision-storyboard.png)
+![Concept storyboard showing element selection, a natural-language request, a code proposal, and a future approved live update](Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/Summon-Fixer-README-Update/docs/images/vision-storyboard.png)
 
 <p align="center"><sub>Product vision: select → describe → review → apply and verify. Automatic application and the final live update are not implemented in the current MVP.</sub></p>
 
