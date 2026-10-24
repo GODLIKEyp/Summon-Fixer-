@@ -57,6 +57,11 @@ export class SourceRegistry {
    */
   public invalidateFile(filePath: string): void {
     this.fileRevisions.delete(filePath);
+    for (const [relPath] of this.fileRevisions.entries()) {
+      if (filePath.endsWith(relPath) || relPath.endsWith(filePath)) {
+        this.fileRevisions.delete(relPath);
+      }
+    }
     for (const [key, mapping] of this.mappings.entries()) {
       if (
         mapping.file === filePath ||

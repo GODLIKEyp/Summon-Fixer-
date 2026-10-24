@@ -290,7 +290,6 @@ export function createBridgeMiddleware(
           status: 'ok',
           bridge: 'ready',
           engineConnected,
-          engineUrl,
           engineDetails,
         })
       );
@@ -397,6 +396,21 @@ export function createBridgeMiddleware(
       if (sourceId) {
         const mapping = sourceRegistry.resolve(sourceId);
         if (mapping) {
+          const clientRevision = taskRequest.context?.sourceSelection?.revision;
+          if (clientRevision && mapping.revision && clientRevision !== mapping.revision) {
+            res.statusCode = 409;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(
+              JSON.stringify({
+                error: {
+                  code: 'ERR_STALE_SOURCE_REVISION',
+                  message: `Source revision mismatch for sourceId '${sourceId}': client sent '${clientRevision}' but registry has '${mapping.revision}'. The file may have been modified since the element was selected. Re-select the element.`,
+                },
+              })
+            );
+            return;
+          }
+
           // Resolve relative path to canonical engine workspace root
           let targetAbsPath = mapping.absolutePath
             ? resolve(mapping.absolutePath)
